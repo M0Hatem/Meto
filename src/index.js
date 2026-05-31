@@ -138,3 +138,16 @@ client.on('messageCreate', async (message) => {
 
 // Start the bot
 client.login(token);
+
+// Create a dummy HTTP server to satisfy Render's port check if deployed as a Web Service (Free Tier)
+const http = require('http');
+const server = http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('Meto Discord Bot is running successfully!\n');
+});
+
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+  console.log(`[Health Check] Dummy HTTP server listening on port ${PORT} to pass Render deployment check.`);
+});
+
