@@ -1,0 +1,28 @@
+{
+  "name": "meto",
+  "version": "1.0.0",
+  "description": "Discord bot to download and embed Facebook Reels and videos",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js"
+  },
+  "keywords": [
+    "discord",
+    "bot",
+    "facebook",
+    "video",
+    "reel",
+    "downloader",
+    "yt-dlp"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "discord.js": "^14.14.1",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  }
+}
