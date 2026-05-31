@@ -3,6 +3,7 @@ const { Client, GatewayIntentBits, AttachmentBuilder } = require('discord.js');
 const { detectFacebookLink } = require('./utils/linkDetector');
 const { downloadVideo } = require('./utils/videoDownloader');
 const { createVideoEmbed } = require('./utils/embedBuilder');
+const { sendWebhookMessage } = require('./utils/webhookHandler');
 
 // Validate Discord token
 const token = process.env.DISCORD_TOKEN;
@@ -26,7 +27,7 @@ const client = new Client({
 
 client.once('ready', () => {
   console.log(`=========================================`);
-  console.log(`🤖 Meto Bot is online and ready!`);
+  console.log('🤖 Meto Bot is online and ready!');
   console.log(`Logged in as: ${client.user.tag}`);
   console.log(`Configuration: Max File Size = ${MAX_FILE_SIZE_MB}MB`);
   console.log(`=========================================`);
@@ -59,31 +60,48 @@ client.on('messageCreate', async (message) => {
     // 2. Download the video under size limit
     videoInfo = await downloadVideo(fbUrl, MAX_FILE_SIZE_MB);
 
+    // Clean original text by removing the Facebook URL
+    const cleanContent = message.content.replace(fbUrl, '').trim();
+
     // 3. Create rich embed and attachment
     const embed = createVideoEmbed(videoInfo, message.author);
-    const attachment = new AttachmentBuilder(videoInfo.filePath, { name: `meto_video.mp4` });
+    const attachment = new AttachmentBuilder(videoInfo.filePath, { name: 'meto_video.mp4' });
 
-    // 4. Send video + embed as a reply to the original message
-    await message.reply({
-      embeds: [embed],
-      files: [attachment],
-      allowedMentions: { repliedUser: false } // Avoid pinging user on reply if they prefer
-    });
+    let sentSuccess = false;
 
-    // 5. Optionally suppress the original Facebook embed to keep the chat clean
+    // 4. Send via Webhook (impersonating the user)
     try {
-      if (message.guild && message.channel.permissionsFor(client.user).has('ManageMessages')) {
-        await message.suppressEmbeds(true);
-      }
-    } catch (suppressErr) {
-      console.log('Failed to suppress original embed (missing Manage Messages permission).');
+      await sendWebhookMessage(message.channel, client.user, message.author, {
+        content: cleanContent || undefined,
+        files: [attachment],
+        embeds: [embed]
+      });
+      sentSuccess = true;
+    } catch (webhookErr) {
+      console.warn(`[Webhook Error] Falling back to standard reply: ${webhookErr.message}`);
+      
+      // Fallback: Send video + embed as a normal reply if webhook fails (e.g. missing permissions)
+      await message.reply({
+        embeds: [embed],
+        files: [attachment],
+        allowedMentions: { repliedUser: false }
+      });
+      sentSuccess = true;
     }
 
-    // 6. Clean up reaction and add success mark
+    // 5. Delete the original message containing the raw link
+    if (sentSuccess) {
+      try {
+        await message.delete();
+      } catch (deleteErr) {
+        console.warn('Could not delete original message (missing Manage Messages permission).');
+      }
+    }
+
+    // 6. Clean up reaction if original message is still accessible (should be deleted, but safety first)
     if (processingReaction) {
       try {
         await processingReaction.users.remove(client.user.id);
-        await message.react('✅');
       } catch (e) {}
     }
 
