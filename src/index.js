@@ -87,6 +87,50 @@ client.on('messageCreate', async (message) => {
     return;
   }
 
+  // --- REPLY DETECTION AND ORIGINAL OWNER NOTIFICATION ---
+  if (message.reference && message.reference.messageId) {
+    try {
+      const referencedMessage = await message.channel.messages.fetch(message.reference.messageId).catch(() => null);
+      if (referencedMessage) {
+        // Check if the referenced message is a Meto bot/webhook message by checking footer text
+        const hasMetoEmbed = referencedMessage.embeds && referencedMessage.embeds.some(embed => 
+          embed.footer && embed.footer.text && embed.footer.text.includes('Meto • Facebook Reels & Videos')
+        );
+
+        if (hasMetoEmbed) {
+          // Find original owner from the embed fields
+          let originalOwnerId = null;
+          for (const embed of referencedMessage.embeds) {
+            const sharedByField = embed.fields && embed.fields.find(f => f.name && f.name.includes('Shared By'));
+            if (sharedByField) {
+              const match = sharedByField.value.match(/<@!?(\d+)>/);
+              if (match) {
+                originalOwnerId = match[1];
+                break;
+              }
+            }
+          }
+
+          if (originalOwnerId && originalOwnerId !== message.author.id) {
+            // Mention the original owner and delete the notification after 1 second
+            const notification = await message.channel.send({
+              content: `<@${originalOwnerId}>, <@${message.author.id}> replied to your shared reel!`
+            }).catch(() => null);
+
+            if (notification) {
+              setTimeout(async () => {
+                await notification.delete().catch(() => null);
+              }, 1000);
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Error in Meto reply detection:', err);
+    }
+  }
+  // --- END OF REPLY DETECTION ---
+
   // Scan message content for Facebook video/reel links
   const fbUrl = detectFacebookLink(message.content);
   if (!fbUrl) return;
