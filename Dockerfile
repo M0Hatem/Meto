@@ -24,4 +24,5 @@ COPY src/ ./src/
 RUN mkdir -p temp
 
 # Start the bot
-CMD [ "npm", "start" ]
+CMD [ "node", "src/index.js" ]
+

@@ -1,4 +1,6 @@
 require('dotenv').config();
+const fs = require('fs');
+const path = require('path');
 const { Client, GatewayIntentBits, AttachmentBuilder } = require('discord.js');
 const { detectFacebookLink } = require('./utils/linkDetector');
 const { downloadVideo } = require('./utils/videoDownloader');
@@ -15,6 +17,49 @@ if (!token || token === 'replace_this_with_your_actual_bot_token') {
 
 // Configs
 const MAX_FILE_SIZE_MB = parseInt(process.env.MAX_FILE_SIZE_MB || '25', 10);
+
+// Whitelisted Servers Config
+function loadAllowedServers(filePath) {
+  if (!filePath) return null;
+  try {
+    const resolvedPath = path.resolve(filePath);
+    if (!fs.existsSync(resolvedPath)) {
+      console.warn(`⚠️ Warning: ALLOWED_SERVERS_FILE specified but does not exist at: ${resolvedPath}`);
+      return null;
+    }
+    const content = fs.readFileSync(resolvedPath, 'utf8').trim();
+    if (!content) {
+      console.log(`ℹ️ Allowed servers file is empty. No guild restrictions applied.`);
+      return null;
+    }
+
+    // Try parsing as JSON first
+    try {
+      const parsed = JSON.parse(content);
+      if (Array.isArray(parsed)) {
+        const ids = parsed.map(id => String(id).trim()).filter(id => id.length > 0);
+        console.log(`🔒 Loaded ${ids.length} allowed server ID(s) from JSON file: ${resolvedPath}`);
+        return ids;
+      }
+    } catch (jsonErr) {
+      // If JSON parsing fails, fallback to line-by-line parsing
+    }
+
+    // Line-by-line parsing (for .txt or simple list files)
+    const ids = content
+      .split(/\r?\n/)
+      .map(line => line.trim())
+      .filter(line => line && !line.startsWith('#') && !line.startsWith('//'));
+    
+    console.log(`🔒 Loaded ${ids.length} allowed server ID(s) from text file: ${resolvedPath}`);
+    return ids;
+  } catch (err) {
+    console.error(`❌ Error reading/parsing ALLOWED_SERVERS_FILE:`, err.message);
+    return null;
+  }
+}
+
+const allowedServers = loadAllowedServers(process.env.ALLOWED_SERVERS_FILE);
 
 // Initialize Client with necessary Intents
 const client = new Client({
@@ -36,6 +81,11 @@ client.once('ready', () => {
 client.on('messageCreate', async (message) => {
   // Ignore messages from bots (prevent infinite loops)
   if (message.author.bot) return;
+
+  // Check if server is whitelisted (if whitelist is active)
+  if (allowedServers && (!message.guildId || !allowedServers.includes(message.guildId))) {
+    return;
+  }
 
   // Scan message content for Facebook video/reel links
   const fbUrl = detectFacebookLink(message.content);
@@ -150,4 +200,24 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`[Health Check] Dummy HTTP server listening on port ${PORT} to pass Render deployment check.`);
 });
+
+// Graceful shutdown handling
+const shutdown = (signal) => {
+  console.log(`\n[Shutdown] Received ${signal}. Starting graceful shutdown...`);
+  server.close(() => {
+    console.log('[Shutdown] Health check HTTP server closed.');
+    try {
+      client.destroy();
+      console.log('[Shutdown] Discord client connection destroyed.');
+    } catch (err) {
+      console.error('[Shutdown] Error destroying Discord client:', err.message);
+    }
+    console.log('[Shutdown] Graceful shutdown complete.');
+    process.exit(0);
+  });
+};
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
+
 
