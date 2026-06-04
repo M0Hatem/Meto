@@ -33,7 +33,7 @@ function runWakeCycle(userId) {
         }
       }
 
-      // 3. Move them back and forth (500ms cycle)
+      // 3. Move them back and forth (1000ms cycle)
       const destination = voiceState.channelId === targetChannelId ? alternateChannelId : targetChannelId;
       voiceState.setChannel(destination)
         .catch(err => {
@@ -64,9 +64,9 @@ function startWakeLoop(botClient, guild, member, targetChannel, alternateChannel
 
   activeWakes.set(member.id, wakeState);
 
-  // Run cycle immediately, then start interval (500ms)
+  // Run cycle immediately, then start interval (1000ms)
   runWakeCycle(member.id);
-  wakeState.interval = setInterval(() => runWakeCycle(member.id), 500);
+  wakeState.interval = setInterval(() => runWakeCycle(member.id), 1000);
 }
 
 function stopWakeLoop(userId) {

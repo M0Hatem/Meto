@@ -23,29 +23,33 @@ async function setupVoiceConnection(botClient, guild, channel, type = 'primary')
     }
 
     const guildConns = voiceConnections.get(guild.id);
+    const existing = guildConns[type];
+
     guildConns[type] = {
       connection,
       channelId: channel.id,
       authorizedDisconnect: false
     };
 
-    // Set up connection event handlers
-    connection.on(VoiceConnectionStatus.Disconnected, async () => {
-      const currentGuildConns = voiceConnections.get(guild.id);
-      const state = currentGuildConns ? currentGuildConns[type] : null;
-      if (state && !state.authorizedDisconnect) {
-        console.log(`[Voice - ${type}] Disconnected from voice in guild ${guild.id}. Reconnecting...`);
-        try {
-          await setupVoiceConnection(botClient, guild, channel, type);
-        } catch (err) {
-          console.error(`[Voice - ${type}] Failed to reconnect voice connection:`, err);
+    // Set up connection event handlers only once
+    if (!existing) {
+      connection.on(VoiceConnectionStatus.Disconnected, async () => {
+        const currentGuildConns = voiceConnections.get(guild.id);
+        const state = currentGuildConns ? currentGuildConns[type] : null;
+        if (state && !state.authorizedDisconnect) {
+          console.log(`[Voice - ${type}] Disconnected from voice in guild ${guild.id}. Reconnecting...`);
+          try {
+            await setupVoiceConnection(botClient, guild, channel, type);
+          } catch (err) {
+            console.error(`[Voice - ${type}] Failed to reconnect voice connection:`, err);
+          }
         }
-      }
-    });
+      });
 
-    connection.on('error', (error) => {
-      console.error(`[Voice - ${type}] Voice connection error in guild ${guild.id}:`, error);
-    });
+      connection.on('error', (error) => {
+        console.error(`[Voice - ${type}] Voice connection error in guild ${guild.id}:`, error);
+      });
+    }
   } catch (err) {
     console.error(`[Voice - ${type}] Error joining channel ${channel.id}:`, err);
   }
