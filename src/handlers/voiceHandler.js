@@ -5,13 +5,17 @@ const { joinVoiceChannel, VoiceConnectionStatus } = require('@discordjs/voice');
 const voiceConnections = new Map();
 
 // Helper function to set up and manage voice connections for a specific bot client (type: 'primary' | 'secondary')
-function setupVoiceConnection(botClient, guild, channel, type = 'primary') {
+async function setupVoiceConnection(botClient, guild, channel, type = 'primary') {
   try {
+    // Fetch the guild using the specific client instance to obtain its correct voiceAdapterCreator
+    const targetGuild = await botClient.guilds.fetch(guild.id).catch(() => guild);
+
     const connection = joinVoiceChannel({
       channelId: channel.id,
       guildId: guild.id,
-      adapterCreator: guild.voiceAdapterCreator,
+      adapterCreator: targetGuild.voiceAdapterCreator,
       selfDeaf: true,
+      group: botClient.user.id
     });
 
     if (!voiceConnections.has(guild.id)) {
@@ -32,7 +36,7 @@ function setupVoiceConnection(botClient, guild, channel, type = 'primary') {
       if (state && !state.authorizedDisconnect) {
         console.log(`[Voice - ${type}] Disconnected from voice in guild ${guild.id}. Reconnecting...`);
         try {
-          setupVoiceConnection(botClient, guild, channel, type);
+          await setupVoiceConnection(botClient, guild, channel, type);
         } catch (err) {
           console.error(`[Voice - ${type}] Failed to reconnect voice connection:`, err);
         }
@@ -48,7 +52,7 @@ function setupVoiceConnection(botClient, guild, channel, type = 'primary') {
 }
 
 // Function to handle automatic rejoining if the bot is moved to a different channel
-function handleVoiceStateUpdate(botClient, type, oldState, newState) {
+async function handleVoiceStateUpdate(botClient, type, oldState, newState) {
   if (newState.id === botClient.user.id) {
     const guildId = newState.guild.id;
     const guildConns = voiceConnections.get(guildId);
@@ -60,7 +64,7 @@ function handleVoiceStateUpdate(botClient, type, oldState, newState) {
     if (state && !state.authorizedDisconnect && newState.channelId !== null && newState.channelId !== state.channelId) {
       console.log(`[Voice - ${type}] Moved from target channel ${state.channelId} to ${newState.channelId} in guild ${guildId}. Rejoining target channel...`);
       try {
-        setupVoiceConnection(botClient, newState.guild, { id: state.channelId }, type);
+        await setupVoiceConnection(botClient, newState.guild, { id: state.channelId }, type);
       } catch (err) {
         console.error(`[Voice - ${type}] Failed to rejoin target channel:`, err);
       }

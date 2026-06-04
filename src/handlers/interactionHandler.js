@@ -18,12 +18,12 @@ async function handleInteractionCreate(interaction, client, clientSecondary) {
 
     try {
       // Connect primary bot
-      setupVoiceConnection(client, interaction.guild, member.voice.channel, 'primary');
+      await setupVoiceConnection(client, interaction.guild, member.voice.channel, 'primary');
 
       // Connect secondary bot if active
       let secondaryJoinedMessage = '';
       if (clientSecondary && clientSecondary.readyAt) {
-        setupVoiceConnection(clientSecondary, interaction.guild, member.voice.channel, 'secondary');
+        await setupVoiceConnection(clientSecondary, interaction.guild, member.voice.channel, 'secondary');
         secondaryJoinedMessage = ` (along with **${clientSecondary.user.username}**)`;
       }
 
