@@ -1,7 +1,8 @@
 require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
-const { Client, GatewayIntentBits, AttachmentBuilder } = require('discord.js');
+const { Client, GatewayIntentBits, AttachmentBuilder, REST, Routes } = require('discord.js');
+const { joinVoiceChannel, VoiceConnectionStatus } = require('@discordjs/voice');
 const { detectFacebookLink } = require('./utils/linkDetector');
 const { downloadVideo } = require('./utils/videoDownloader');
 const { createVideoEmbed } = require('./utils/embedBuilder');
@@ -66,16 +67,41 @@ const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildVoiceStates
   ]
 });
 
-client.once('ready', () => {
+client.once('ready', async () => {
   console.log(`=========================================`);
   console.log('🤖 Meto Bot is online and ready!');
   console.log(`Logged in as: ${client.user.tag}`);
   console.log(`Configuration: Max File Size = ${MAX_FILE_SIZE_MB}MB`);
   console.log(`=========================================`);
+
+  // Register application slash commands
+  const commands = [
+    {
+      name: 'join',
+      description: 'Forces the bot to join your voice channel and persist there indefinitely.'
+    },
+    {
+      name: 'leave',
+      description: 'Disconnects the bot from the voice channel (Authorized users only).'
+    }
+  ];
+
+  try {
+    const rest = new REST({ version: '10' }).setToken(token);
+    console.log('[Slash Commands] Started refreshing application (/) commands.');
+    await rest.put(
+      Routes.applicationCommands(client.user.id),
+      { body: commands }
+    );
+    console.log('[Slash Commands] Successfully reloaded application (/) commands.');
+  } catch (error) {
+    console.error('[Slash Commands] Error registering application commands:', error);
+  }
 });
 
 client.on('messageCreate', async (message) => {
@@ -230,6 +256,184 @@ client.on('messageCreate', async (message) => {
   }
 });
 
+// Track voice connections globally (guildId -> { primary: state, secondary: state })
+// state = { connection, channelId, authorizedDisconnect }
+const voiceConnections = new Map();
+
+// Helper function to set up and manage voice connections for a specific bot client (type: 'primary' | 'secondary')
+function setupVoiceConnection(botClient, guild, channel, type = 'primary') {
+  try {
+    const connection = joinVoiceChannel({
+      channelId: channel.id,
+      guildId: guild.id,
+      adapterCreator: guild.voiceAdapterCreator,
+      selfDeaf: true,
+    });
+
+    if (!voiceConnections.has(guild.id)) {
+      voiceConnections.set(guild.id, {});
+    }
+
+    const guildConns = voiceConnections.get(guild.id);
+    guildConns[type] = {
+      connection,
+      channelId: channel.id,
+      authorizedDisconnect: false
+    };
+
+    // Set up connection event handlers
+    connection.on(VoiceConnectionStatus.Disconnected, async () => {
+      const currentGuildConns = voiceConnections.get(guild.id);
+      const state = currentGuildConns ? currentGuildConns[type] : null;
+      if (state && !state.authorizedDisconnect) {
+        console.log(`[Voice - ${type}] Disconnected from voice in guild ${guild.id}. Reconnecting...`);
+        try {
+          setupVoiceConnection(botClient, guild, channel, type);
+        } catch (err) {
+          console.error(`[Voice - ${type}] Failed to reconnect voice connection:`, err);
+        }
+      }
+    });
+
+    connection.on('error', (error) => {
+      console.error(`[Voice - ${type}] Voice connection error in guild ${guild.id}:`, error);
+    });
+  } catch (err) {
+    console.error(`[Voice - ${type}] Error joining channel ${channel.id}:`, err);
+  }
+}
+
+// Function to handle automatic rejoining if the bot is moved to a different channel
+function handleVoiceStateUpdate(botClient, type, oldState, newState) {
+  if (newState.id === botClient.user.id) {
+    const guildId = newState.guild.id;
+    const guildConns = voiceConnections.get(guildId);
+    const state = guildConns ? guildConns[type] : null;
+    
+    // If the bot has active connection and shouldn't be disconnected
+    // AND it has been moved to a different channel (newState.channelId is not null, which means it wasn't disconnected entirely)
+    // AND the new channel is different from the tracked target channel ID
+    if (state && !state.authorizedDisconnect && newState.channelId !== null && newState.channelId !== state.channelId) {
+      console.log(`[Voice - ${type}] Moved from target channel ${state.channelId} to ${newState.channelId} in guild ${guildId}. Rejoining target channel...`);
+      try {
+        // Move back to target channel
+        setupVoiceConnection(botClient, newState.guild, { id: state.channelId }, type);
+      } catch (err) {
+        console.error(`[Voice - ${type}] Failed to rejoin target channel:`, err);
+      }
+    }
+  }
+}
+
+// Register voiceStateUpdate listener for primary client
+client.on('voiceStateUpdate', (oldState, newState) => {
+  handleVoiceStateUpdate(client, 'primary', oldState, newState);
+});
+
+// Initialize and login Secondary Bot if configured
+let clientSecondary = null;
+const tokenSecondary = process.env.DISCORD_TOKEN_SECONDARY;
+
+if (tokenSecondary && tokenSecondary !== 'replace_this_with_your_actual_bot_token' && tokenSecondary.trim() !== '') {
+  clientSecondary = new Client({
+    intents: [
+      GatewayIntentBits.Guilds,
+      GatewayIntentBits.GuildVoiceStates
+    ]
+  });
+
+  clientSecondary.once('ready', () => {
+    console.log(`=========================================`);
+    console.log('🤖 Meto Bot (Secondary) is online and ready!');
+    console.log(`Logged in as: ${clientSecondary.user.tag}`);
+    console.log(`=========================================`);
+  });
+
+  clientSecondary.on('voiceStateUpdate', (oldState, newState) => {
+    handleVoiceStateUpdate(clientSecondary, 'secondary', oldState, newState);
+  });
+
+  clientSecondary.login(tokenSecondary).catch(err => {
+    console.error('Failed to log in secondary bot client:', err.message);
+  });
+}
+
+// Handle Slash Commands
+client.on('interactionCreate', async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
+
+  const { commandName } = interaction;
+
+  if (commandName === 'join') {
+    const member = interaction.member;
+    if (!member || !member.voice.channel) {
+      return interaction.reply({
+        content: '❌ You must be in a voice channel to use this command.',
+        ephemeral: true
+      });
+    }
+
+    try {
+      // Connect primary bot
+      setupVoiceConnection(client, interaction.guild, member.voice.channel, 'primary');
+
+      // Connect secondary bot if active
+      let secondaryJoinedMessage = '';
+      if (clientSecondary && clientSecondary.readyAt) {
+        setupVoiceConnection(clientSecondary, interaction.guild, member.voice.channel, 'secondary');
+        secondaryJoinedMessage = ` (along with **${clientSecondary.user.username}**)`;
+      }
+
+      await interaction.reply({
+        content: `🔊 Joined voice channel **${member.voice.channel.name}**${secondaryJoinedMessage}! I will remain here indefinitely.`,
+      });
+    } catch (error) {
+      console.error('[Voice] Error joining channel:', error);
+      await interaction.reply({
+        content: '❌ Failed to join the voice channel.',
+        ephemeral: true
+      });
+    }
+  } else if (commandName === 'leave') {
+    const authorizedUserId = '476908643711713280';
+    if (interaction.user.id !== authorizedUserId) {
+      return interaction.reply({
+        content: `❌ Only the authorized user (<@${authorizedUserId}>) is allowed to disconnect the bot.`,
+        ephemeral: true
+      });
+    }
+
+    const guildConns = voiceConnections.get(interaction.guildId);
+    if (!guildConns || (!guildConns.primary && !guildConns.secondary)) {
+      return interaction.reply({
+        content: '❌ I am not in a voice channel in this server.',
+        ephemeral: true
+      });
+    }
+
+    try {
+      if (guildConns.primary) {
+        guildConns.primary.authorizedDisconnect = true;
+        guildConns.primary.connection.destroy();
+      }
+      if (guildConns.secondary) {
+        guildConns.secondary.authorizedDisconnect = true;
+        guildConns.secondary.connection.destroy();
+      }
+      voiceConnections.delete(interaction.guildId);
+      await interaction.reply({
+        content: '👋 Left the voice channel successfully.',
+      });
+    } catch (error) {
+      console.error('[Voice] Error leaving channel:', error);
+      await interaction.reply({
+        content: '❌ Failed to leave the voice channel.',
+        ephemeral: true
+      });
+    }
+  }
+});
+
 // Start the bot
 client.login(token);
 
@@ -251,8 +455,31 @@ const shutdown = (signal) => {
   server.close(() => {
     console.log('[Shutdown] Health check HTTP server closed.');
     try {
+      // Disconnect all voice connections
+      for (const [guildId, guildConns] of voiceConnections.entries()) {
+        if (guildConns.primary) {
+          try {
+            guildConns.primary.authorizedDisconnect = true;
+            guildConns.primary.connection.destroy();
+          } catch (e) {}
+        }
+        if (guildConns.secondary) {
+          try {
+            guildConns.secondary.authorizedDisconnect = true;
+            guildConns.secondary.connection.destroy();
+          } catch (e) {}
+        }
+      }
+      voiceConnections.clear();
+      console.log('[Shutdown] All active voice connections destroyed.');
+
       client.destroy();
-      console.log('[Shutdown] Discord client connection destroyed.');
+      console.log('[Shutdown] Discord client (primary) connection destroyed.');
+
+      if (clientSecondary) {
+        clientSecondary.destroy();
+        console.log('[Shutdown] Discord client (secondary) connection destroyed.');
+      }
     } catch (err) {
       console.error('[Shutdown] Error destroying Discord client:', err.message);
     }
