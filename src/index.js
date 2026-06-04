@@ -1,7 +1,7 @@
 require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
-const { Client, GatewayIntentBits, AttachmentBuilder, REST, Routes } = require('discord.js');
+const { Client, GatewayIntentBits, AttachmentBuilder, REST, Routes, PermissionFlagsBits, ChannelType } = require('discord.js');
 const { joinVoiceChannel, VoiceConnectionStatus } = require('@discordjs/voice');
 const { detectFacebookLink } = require('./utils/linkDetector');
 const { downloadVideo } = require('./utils/videoDownloader');
@@ -88,6 +88,54 @@ client.once('ready', async () => {
     {
       name: 'leave',
       description: 'Disconnects the bot from the voice channel (Authorized users only).'
+    },
+    {
+      name: 'wake',
+      description: 'Wakes up deafened/muted voice channel members by moving them back and forth.',
+      options: [
+        {
+          name: 'user1',
+          description: 'First user to wake',
+          type: 6, // USER
+          required: true
+        },
+        {
+          name: 'user2',
+          description: 'Second user to wake',
+          type: 6, // USER
+          required: false
+        },
+        {
+          name: 'user3',
+          description: 'Third user to wake',
+          type: 6, // USER
+          required: false
+        },
+        {
+          name: 'user4',
+          description: 'Fourth user to wake',
+          type: 6, // USER
+          required: false
+        },
+        {
+          name: 'user5',
+          description: 'Fifth user to wake',
+          type: 6, // USER
+          required: false
+        }
+      ]
+    },
+    {
+      name: 'stopw',
+      description: 'Stops the wake loop for a specific user or all users.',
+      options: [
+        {
+          name: 'user',
+          description: 'Specific user to stop waking (leave empty to stop all)',
+          type: 6, // USER
+          required: false
+        }
+      ]
     }
   ];
 
@@ -330,6 +378,91 @@ client.on('voiceStateUpdate', (oldState, newState) => {
   handleVoiceStateUpdate(client, 'primary', oldState, newState);
 });
 
+// Track active wake loops (userId -> { interval, guild, targetChannelId, alternateChannelId, forceWake, initialSelfDeaf, initialSelfMute })
+const activeWakes = new Map();
+
+function runWakeCycle(userId) {
+  const wakeState = activeWakes.get(userId);
+  if (!wakeState) return;
+
+  const { guild, targetChannelId, alternateChannelId, forceWake, initialSelfDeaf, initialSelfMute } = wakeState;
+
+  // Fetch target member
+  guild.members.fetch(userId)
+    .then(member => {
+      const voiceState = member.voice;
+
+      // 1. Check if they disconnected from voice
+      if (!voiceState || !voiceState.channelId) {
+        console.log(`[Wake] User ${userId} disconnected from voice. Stopping wake loop.`);
+        stopWakeLoop(userId);
+        return;
+      }
+
+      // 2. Check if they undeafened or unmuted (unless forceWake is active)
+      if (!forceWake) {
+        // If they were deafened and are now undeafened
+        if (initialSelfDeaf && !voiceState.selfDeaf) {
+          console.log(`[Wake] User ${userId} undeafened. Stopping wake loop.`);
+          stopWakeLoop(userId);
+          return;
+        }
+        // If they were muted and are now unmuted
+        if (initialSelfMute && !voiceState.selfMute) {
+          console.log(`[Wake] User ${userId} unmuted. Stopping wake loop.`);
+          stopWakeLoop(userId);
+          return;
+        }
+      }
+
+      // 3. Move them back and forth
+      // If they are in the target channel, move to alternate
+      // If they are in any other channel (including alternate), move to target
+      const destination = voiceState.channelId === targetChannelId ? alternateChannelId : targetChannelId;
+      voiceState.setChannel(destination)
+        .catch(err => {
+          console.error(`[Wake] Failed to move user ${userId}:`, err.message);
+        });
+    })
+    .catch(err => {
+      console.error(`[Wake] Failed to fetch member ${userId}:`, err.message);
+      stopWakeLoop(userId);
+    });
+}
+
+function startWakeLoop(botClient, guild, member, targetChannel, alternateChannel, forceWake) {
+  // Clear any existing wake loop for this user first
+  stopWakeLoop(member.id);
+
+  const initialSelfDeaf = member.voice.selfDeaf;
+  const initialSelfMute = member.voice.selfMute;
+
+  const wakeState = {
+    guild,
+    targetChannelId: targetChannel.id,
+    alternateChannelId: alternateChannel.id,
+    forceWake,
+    initialSelfDeaf,
+    initialSelfMute
+  };
+
+  activeWakes.set(member.id, wakeState);
+
+  // Run cycle immediately, then start interval
+  runWakeCycle(member.id);
+  wakeState.interval = setInterval(() => runWakeCycle(member.id), 500);
+}
+
+function stopWakeLoop(userId) {
+  const wakeState = activeWakes.get(userId);
+  if (wakeState) {
+    clearInterval(wakeState.interval);
+    activeWakes.delete(userId);
+    return true;
+  }
+  return false;
+}
+
 // Initialize and login Secondary Bot if configured
 let clientSecondary = null;
 const tokenSecondary = process.env.DISCORD_TOKEN_SECONDARY;
@@ -431,6 +564,154 @@ client.on('interactionCreate', async (interaction) => {
         ephemeral: true
       });
     }
+  } else if (commandName === 'wake') {
+    const authorizedUserId = '476908643711713280';
+    const isAdmin = interaction.member.permissions.has(PermissionFlagsBits.Administrator);
+    const isAuthorized = interaction.user.id === authorizedUserId;
+
+    if (!isAdmin && !isAuthorized) {
+      return interaction.reply({
+        content: '❌ Only server administrators are allowed to use this command.',
+        ephemeral: true
+      });
+    }
+
+    // Get all users from arguments (up to 5)
+    const targets = [];
+    for (let i = 1; i <= 5; i++) {
+      const user = interaction.options.getUser(`user${i}`);
+      if (user) {
+        targets.push(user);
+      }
+    }
+
+    if (targets.length === 0) {
+      return interaction.reply({
+        content: '❌ You must specify at least one user to wake.',
+        ephemeral: true
+      });
+    }
+
+    const results = [];
+    
+    // We defer reply because fetching members and voice channels can take a moment
+    await interaction.deferReply({ ephemeral: true });
+
+    for (const user of targets) {
+      try {
+        const member = await interaction.guild.members.fetch(user.id).catch(() => null);
+        if (!member) {
+          results.push(`❌ **${user.username}** could not be found in this server.`);
+          continue;
+        }
+
+        const voiceState = member.voice;
+        if (!voiceState || !voiceState.channelId) {
+          results.push(`❌ **${user.username}** is not in a voice channel.`);
+          continue;
+        }
+
+        const isDeafened = voiceState.selfDeaf;
+        const isMuted = voiceState.selfMute;
+
+        // If target is NOT deafened and NOT muted, only authorized user can run force-wake
+        const forceWake = !isDeafened && !isMuted;
+        if (forceWake && !isAuthorized) {
+          results.push(`❌ **${user.username}** is not muted or deafened. Only the authorized user (<@${authorizedUserId}>) can force-wake active users.`);
+          continue;
+        }
+
+        // Get category channel ID of the current channel
+        const currentChannel = voiceState.channel;
+        const parentId = currentChannel.parentId;
+
+        // Find alternate voice channel in the same category
+        let alternateChannel = null;
+        if (parentId) {
+          const categoryChannels = interaction.guild.channels.cache.filter(c => 
+            c.parentId === parentId && c.id !== currentChannel.id && c.type === ChannelType.GuildVoice
+          );
+          alternateChannel = categoryChannels.first();
+        }
+
+        // Fallback to any other voice channel in the guild if none in same category
+        if (!alternateChannel) {
+          const guildVoiceChannels = interaction.guild.channels.cache.filter(c => 
+            c.id !== currentChannel.id && c.type === ChannelType.GuildVoice
+          );
+          alternateChannel = guildVoiceChannels.first();
+        }
+
+        if (!alternateChannel) {
+          results.push(`❌ **${user.username}** cannot be woken because there are no other voice channels in the server to move them to.`);
+          continue;
+        }
+
+        // Start the wake loop!
+        startWakeLoop(client, interaction.guild, member, currentChannel, alternateChannel, forceWake);
+        
+        if (forceWake) {
+          results.push(`🚨 **${user.username}** is being force-woken indefinitely (until stopped by <@${authorizedUserId}>).`);
+        } else {
+          results.push(`🔊 **${user.username}** is being woken (will stop when they undeafen/unmute/disconnect).`);
+        }
+      } catch (err) {
+        console.error(`Error processing wake for user ${user.username}:`, err);
+        results.push(`❌ Failed to start wake loop for **${user.username}**.`);
+      }
+    }
+
+    await interaction.editReply({
+      content: results.join('\n')
+    });
+  } else if (commandName === 'stopw') {
+    const authorizedUserId = '476908643711713280';
+    const isAuthorized = interaction.user.id === authorizedUserId;
+    const targetUser = interaction.options.getUser('user');
+
+    if (targetUser) {
+      // Check if there is an active wake loop for this user
+      const wakeState = activeWakes.get(targetUser.id);
+      if (!wakeState) {
+        return interaction.reply({
+          content: `❌ There is no active wake loop for **${targetUser.username}**.`,
+          ephemeral: true
+        });
+      }
+
+      // If it's a force-wake and the caller is not the authorized user, reject
+      if (wakeState.forceWake && !isAuthorized) {
+        return interaction.reply({
+          content: `❌ Only the authorized user (<@${authorizedUserId}>) can stop force-wake loops.`,
+          ephemeral: true
+        });
+      }
+
+      stopWakeLoop(targetUser.id);
+      return interaction.reply({
+        content: `⏹️ Stopped waking **${targetUser.username}**.`,
+        ephemeral: true
+      });
+    } else {
+      // Stop all active wake loops - only allowed for authorized user
+      if (!isAuthorized) {
+        return interaction.reply({
+          content: `❌ Only the authorized user (<@${authorizedUserId}>) is allowed to stop all wake loops.`,
+          ephemeral: true
+        });
+      }
+
+      let count = 0;
+      for (const userId of activeWakes.keys()) {
+        stopWakeLoop(userId);
+        count++;
+      }
+
+      return interaction.reply({
+        content: `⏹️ Stopped all active wake loops (${count} user(s)).`,
+        ephemeral: true
+      });
+    }
   }
 });
 
@@ -455,6 +736,13 @@ const shutdown = (signal) => {
   server.close(() => {
     console.log('[Shutdown] Health check HTTP server closed.');
     try {
+      // Stop all active wake loops
+      for (const userId of activeWakes.keys()) {
+        stopWakeLoop(userId);
+      }
+      activeWakes.clear();
+      console.log('[Shutdown] All active wake loops stopped.');
+
       // Disconnect all voice connections
       for (const [guildId, guildConns] of voiceConnections.entries()) {
         if (guildConns.primary) {
