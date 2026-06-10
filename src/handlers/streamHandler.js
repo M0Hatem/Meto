@@ -154,9 +154,36 @@ function cleanupAllStreams() {
   activeStreams.clear();
 }
 
+async function restartStreamIfActive(guildId) {
+  const active = activeStreams.get(guildId);
+  if (active && active.streamer) {
+    console.log(`[StreamHandler] Re-establishing stream in guild ${guildId} after voice rejoin...`);
+    try {
+      // Stop any stale stream connection state
+      try { active.streamer.stopStream(); } catch (_) {}
+
+      const config = getStreamConfig(guildId);
+      await active.streamer.createStream({
+        width: config.width || 1280,
+        height: config.height || 720,
+        fps: config.fps || 30,
+        bitrateKbps: config.bitrateKbps || 2500,
+        maxBitrateKbps: (config.bitrateKbps || 2500) * 1.5,
+        videoCodec: 'H264',
+        readAtNativeFps: true,
+        hardwareAcceleratedDecoding: false
+      });
+      console.log(`[StreamHandler] Stream re-established successfully in guild ${guildId}.`);
+    } catch (err) {
+      console.error(`[StreamHandler] Failed to re-establish stream in guild ${guildId}:`, err.message);
+    }
+  }
+}
+
 module.exports = {
   streamCommandData,
   handleStreamCommand,
   stopStreamForGuild,
-  cleanupAllStreams
+  cleanupAllStreams,
+  restartStreamIfActive
 };

@@ -41,6 +41,15 @@ async function setupVoiceConnection(botClient, guild, channel, type = 'primary')
       };
 
       console.log(`[Voice - secondary] Joined VC ${channel.id} in guild ${guild.id} via Streamer.`);
+      
+      // Auto-restart stream if it was active before the disconnect/move
+      try {
+        const { restartStreamIfActive } = require('./streamHandler');
+        restartStreamIfActive(guild.id);
+      } catch (err) {
+        console.error('[Voice - secondary] Failed to check/restart active stream:', err.message);
+      }
+
       return;
     }
 
@@ -92,7 +101,7 @@ async function setupVoiceConnection(botClient, guild, channel, type = 'primary')
   }
 }
 
-// Function to handle automatic rejoining if the bot is moved to a different channel
+// Function to handle automatic rejoining if the bot is moved or disconnected
 async function handleVoiceStateUpdate(botClient, type, oldState, newState) {
   if (newState.id === botClient.user.id) {
     const guildId = newState.guild.id;
@@ -100,14 +109,21 @@ async function handleVoiceStateUpdate(botClient, type, oldState, newState) {
     const state = guildConns ? guildConns[type] : null;
     
     // If the bot has active connection and shouldn't be disconnected
-    // AND it has been moved to a different channel (newState.channelId is not null)
-    // AND the new channel is different from the tracked target channel ID
-    if (state && !state.authorizedDisconnect && newState.channelId !== null && newState.channelId !== state.channelId) {
-      console.log(`[Voice - ${type}] Moved from target channel ${state.channelId} to ${newState.channelId} in guild ${guildId}. Rejoining target channel...`);
-      try {
-        await setupVoiceConnection(botClient, newState.guild, { id: state.channelId }, type);
-      } catch (err) {
-        console.error(`[Voice - ${type}] Failed to rejoin target channel:`, err);
+    if (state && !state.authorizedDisconnect) {
+      if (newState.channelId === null) {
+        console.log(`[Voice - ${type}] Kicked/Disconnected from target channel ${state.channelId} in guild ${guildId}. Rejoining...`);
+        try {
+          await setupVoiceConnection(botClient, newState.guild, { id: state.channelId }, type);
+        } catch (err) {
+          console.error(`[Voice - ${type}] Failed to rejoin target channel after disconnect:`, err);
+        }
+      } else if (newState.channelId !== state.channelId) {
+        console.log(`[Voice - ${type}] Moved from target channel ${state.channelId} to ${newState.channelId} in guild ${guildId}. Rejoining target channel...`);
+        try {
+          await setupVoiceConnection(botClient, newState.guild, { id: state.channelId }, type);
+        } catch (err) {
+          console.error(`[Voice - ${type}] Failed to rejoin target channel:`, err);
+        }
       }
     }
   }
