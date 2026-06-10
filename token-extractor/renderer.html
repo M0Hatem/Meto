@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Meto Token Extractor</title>
+  <style>
+    /* ─── Reset & Base ──────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      height: 100vh;
+      overflow: hidden;
+      user-select: none;
+    }
+
+    /* ─── Custom Title Bar ──────────────────────────────── */
+    .title-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 32px;
+      padding: 0 12px;
+      background: #16162a;
+      -webkit-app-region: drag;
+    }
+
+    .title-bar-text {
+      font-size: 11px;
+      font-weight: 500;
+      color: #888;
+      letter-spacing: 0.5px;
+    }
+
+    .title-bar-close {
+      -webkit-app-region: no-drag;
+      width: 28px;
+      height: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: none;
+      background: transparent;
+      color: #666;
+      font-size: 16px;
+      cursor: pointer;
+      border-radius: 4px;
+      transition: all 0.15s ease;
+    }
+
+    .title-bar-close:hover {
+      background: #e94560;
+      color: #fff;
+    }
+
+    /* ─── Main Content ──────────────────────────────────── */
+    .container {
+      padding: 24px 28px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+
+    /* ─── Header ─────────────────────────────────────────── */
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .lock-icon {
+      width: 36px;
+      height: 36px;
+      background: linear-gradient(135deg, #0f3460, #e94560);
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      flex-shrink: 0;
+    }
+
+    .header-text h1 {
+      font-size: 16px;
+      font-weight: 700;
+      color: #fff;
+      letter-spacing: 0.3px;
+    }
+
+    .header-text p {
+      font-size: 11px;
+      color: #777;
+      margin-top: 2px;
+    }
+
+    /* ─── Extract Button ─────────────────────────────────── */
+    .extract-btn {
+      width: 100%;
+      padding: 12px;
+      background: linear-gradient(135deg, #e94560 0%, #c23152 100%);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      letter-spacing: 0.5px;
+      transition: all 0.2s ease;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .extract-btn:hover:not(:disabled) {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 16px rgba(233, 69, 96, 0.4);
+    }
+
+    .extract-btn:active:not(:disabled) {
+      transform: translateY(0);
+    }
+
+    .extract-btn:disabled {
+      opacity: 0.7;
+      cursor: wait;
+    }
+
+    /* ─── Token Field ─────────────────────────────────────── */
+    .token-field {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: #16162a;
+      border: 1px solid #2a2a4a;
+      border-radius: 8px;
+      padding: 4px;
+      transition: border-color 0.2s;
+    }
+
+    .token-field.has-token {
+      border-color: #0f3460;
+    }
+
+    .token-input {
+      flex: 1;
+      background: transparent;
+      border: none;
+      outline: none;
+      color: #e0e0e0;
+      font-family: 'Courier New', monospace;
+      font-size: 12px;
+      padding: 8px;
+      letter-spacing: 0.3px;
+    }
+
+    .token-input::placeholder {
+      color: #444;
+      font-family: 'Inter', sans-serif;
+    }
+
+    .icon-btn {
+      width: 32px;
+      height: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      color: #666;
+      cursor: pointer;
+      font-size: 14px;
+      transition: all 0.15s ease;
+      flex-shrink: 0;
+    }
+
+    .icon-btn:hover {
+      background: #2a2a4a;
+      color: #e94560;
+      border-color: #333;
+    }
+
+    .icon-btn.copied {
+      color: #4ade80;
+    }
+
+    /* ─── Status Bar ──────────────────────────────────────── */
+    .status {
+      font-size: 11px;
+      color: #555;
+      text-align: center;
+      padding: 4px 0;
+    }
+
+    .status.detected {
+      color: #4ade80;
+    }
+
+    .status.error {
+      color: #e94560;
+    }
+
+    /* ─── Disclaimer ──────────────────────────────────────── */
+    .disclaimer {
+      font-size: 10px;
+      color: #444;
+      text-align: center;
+      line-height: 1.4;
+      border-top: 1px solid #222;
+      padding-top: 10px;
+    }
+
+    /* ─── Spinner ──────────────────────────────────────────── */
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .spinner {
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      border: 2px solid rgba(255,255,255,0.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+      vertical-align: middle;
+      margin-right: 6px;
+    }
+
+    /* ─── Fade-in ──────────────────────────────────────────── */
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .fade-in {
+      animation: fadeIn 0.3s ease;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Custom title bar -->
+  <div class="title-bar">
+    <span class="title-bar-text">METO TOKEN EXTRACTOR</span>
+    <button class="title-bar-close" id="close-btn" title="Close">✕</button>
+  </div>
+
+  <div class="container">
+    <!-- Header -->
+    <div class="header">
+      <div class="lock-icon">🔐</div>
+      <div class="header-text">
+        <h1>Token Extractor</h1>
+        <p>Extract your Discord user token securely</p>
+      </div>
+    </div>
+
+    <!-- Client Selection (only visible/enabled when multiple clients are found) -->
+    <div id="client-selector-container" style="display: none; flex-direction: column; gap: 6px; animation: fadeIn 0.3s ease;">
+      <label for="client-select" style="font-size: 11px; color: #888; font-weight: 500;">Select Discord Client:</label>
+      <select id="client-select" style="width: 100%; padding: 10px; background: #16162a; border: 1px solid #2a2a4a; border-radius: 8px; color: #e0e0e0; font-family: inherit; font-size: 12px; outline: none; transition: border-color 0.2s; cursor: pointer;"></select>
+    </div>
+
+    <!-- Extract button -->
+    <button class="extract-btn" id="extract-btn">Extract Token</button>
+
+    <!-- Token display -->
+    <div class="token-field" id="token-field">
+      <input type="password" class="token-input" id="token-input" placeholder="Token will appear here..." readonly>
+      <button class="icon-btn" id="toggle-visibility" title="Show/hide token">👁</button>
+      <button class="icon-btn" id="copy-btn" title="Copy to clipboard">📋</button>
+    </div>
+
+    <!-- Status -->
+    <div class="status" id="status">Detecting Discord installation...</div>
+
+    <!-- Disclaimer -->
+    <div class="disclaimer">
+      🔒 This tool only reads local files. Nothing is sent over the network.<br>
+      For use with the Meto Discord bot only. Do not distribute.
+    </div>
+  </div>
+
+  <script>
+    // ─── Elements ──────────────────────────────────────
+    const extractBtn = document.getElementById('extract-btn');
+    const tokenInput = document.getElementById('token-input');
+    const tokenField = document.getElementById('token-field');
+    const toggleBtn = document.getElementById('toggle-visibility');
+    const copyBtn = document.getElementById('copy-btn');
+    const statusEl = document.getElementById('status');
+    const closeBtn = document.getElementById('close-btn');
+    const clientSelectorContainer = document.getElementById('client-selector-container');
+    const clientSelect = document.getElementById('client-select');
+
+    let currentToken = '';
+    let isVisible = false;
+
+    // ─── Close ─────────────────────────────────────────
+    closeBtn.addEventListener('click', () => window.api.closeApp());
+
+    // ─── Detect clients on load ────────────────────────
+    (async () => {
+      try {
+        const clients = await window.api.detectClients();
+        if (clients.length > 0) {
+          const names = clients.map(c => c.name).join(', ');
+          statusEl.textContent = `Detected: ${names}`;
+          statusEl.className = 'status detected';
+
+          // Populate client selector dropdown
+          clients.forEach(client => {
+            const option = document.createElement('option');
+            option.value = client.path;
+            option.textContent = client.name;
+            clientSelect.appendChild(option);
+          });
+
+          // Show selector dropdown if more than 1 client is found
+          if (clients.length > 1) {
+            clientSelectorContainer.style.display = 'flex';
+          }
+        } else {
+          statusEl.textContent = 'No Discord installation found.';
+          statusEl.className = 'status error';
+        }
+      } catch {
+        statusEl.textContent = 'Failed to detect Discord.';
+        statusEl.className = 'status error';
+      }
+    })();
+
+    // ─── Extract ───────────────────────────────────────
+    extractBtn.addEventListener('click', async () => {
+      extractBtn.disabled = true;
+      extractBtn.innerHTML = '<span class="spinner"></span>Extracting...';
+      statusEl.textContent = 'Reading local Discord storage...';
+      statusEl.className = 'status';
+
+      try {
+        const selectedClientPath = clientSelect.value || null;
+        const result = await window.api.extractToken(selectedClientPath);
+        if (result.success) {
+          currentToken = result.token;
+          tokenInput.value = result.token;
+          tokenInput.type = 'password';
+          isVisible = false;
+          tokenField.classList.add('has-token');
+          tokenField.classList.add('fade-in');
+          statusEl.textContent = `✓ Token extracted from ${result.client}`;
+          statusEl.className = 'status detected';
+        } else {
+          statusEl.textContent = `✗ ${result.error}`;
+          statusEl.className = 'status error';
+        }
+      } catch (err) {
+        statusEl.textContent = `✗ Unexpected error: ${err.message}`;
+        statusEl.className = 'status error';
+      }
+
+      extractBtn.disabled = false;
+      extractBtn.textContent = 'Extract Token';
+    });
+
+    // ─── Toggle visibility ─────────────────────────────
+    toggleBtn.addEventListener('click', () => {
+      if (!currentToken) return;
+      isVisible = !isVisible;
+      tokenInput.type = isVisible ? 'text' : 'password';
+      toggleBtn.textContent = isVisible ? '🙈' : '👁';
+    });
+
+    // ─── Copy ──────────────────────────────────────────
+    copyBtn.addEventListener('click', async () => {
+      if (!currentToken) return;
+      await window.api.copyToClipboard(currentToken);
+      copyBtn.textContent = '✓';
+      copyBtn.classList.add('copied');
+      setTimeout(() => {
+        copyBtn.textContent = '📋';
+        copyBtn.classList.remove('copied');
+      }, 1500);
+    });
+  </script>
+
+</body>
+</html>

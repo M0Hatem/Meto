@@ -1,7 +1,27 @@
 require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
+const https = require('https');
 const { Client, GatewayIntentBits } = require('discord.js');
+
+function checkIsBotToken(token) {
+  return new Promise((resolve) => {
+    if (!token) return resolve(false);
+    const req = https.request({
+      hostname: 'discord.com',
+      path: '/api/v10/users/@me',
+      method: 'GET',
+      headers: {
+        Authorization: `Bot ${token}`,
+        'User-Agent': 'MetoBot (https://github.com/M0Hatem/Meto)'
+      }
+    }, (res) => {
+      resolve(res.statusCode === 200);
+    });
+    req.on('error', () => resolve(false));
+    req.end();
+  });
+}
 
 // Import handlers
 const { registerSlashCommands } = require('./handlers/commandRegistry');
@@ -9,6 +29,13 @@ const { initVoiceHandlers, cleanupVoiceConnections } = require('./handlers/voice
 const { cleanupWakeLoops } = require('./handlers/wakeHandler');
 const { handleMessageCreate } = require('./handlers/messageHandler');
 const { handleInteractionCreate } = require('./handlers/interactionHandler');
+const { cleanupAllStreams, stopStreamForGuild } = require('./handlers/streamHandler');
+
+// Validate secondary client (self-bot user token) for VC/streaming
+const tokenSecondary = process.env.DISCORD_TOKEN_SECONDARY;
+if (!tokenSecondary || tokenSecondary === 'replace_this_with_your_actual_bot_token' || tokenSecondary.trim() === '') {
+  console.warn('⚠️  DISCORD_TOKEN_SECONDARY is not set in .env. The secondary client (self-bot) and /stream command will be disabled.');
+}
 
 // Validate Discord token
 const token = process.env.DISCORD_TOKEN;
@@ -88,38 +115,58 @@ client.on('messageCreate', async (message) => {
 
 // Initialize and login Secondary Bot if configured
 let clientSecondary = null;
-const tokenSecondary = process.env.DISCORD_TOKEN_SECONDARY;
 
-if (tokenSecondary && tokenSecondary !== 'replace_this_with_your_actual_bot_token' && tokenSecondary.trim() !== '') {
-  clientSecondary = new Client({
-    intents: [
-      GatewayIntentBits.Guilds,
-      GatewayIntentBits.GuildVoiceStates
-    ]
+(async () => {
+  if (tokenSecondary && tokenSecondary !== 'replace_this_with_your_actual_bot_token' && tokenSecondary.trim() !== '') {
+    const isBot = await checkIsBotToken(tokenSecondary);
+    if (isBot) {
+      console.log('ℹ️ Secondary token detected as a BOT token. Running secondary client in standard Bot mode.');
+      clientSecondary = new Client({
+        intents: [
+          GatewayIntentBits.Guilds,
+          GatewayIntentBits.GuildVoiceStates
+        ]
+      });
+      clientSecondary.isSelfbot = false;
+    } else {
+      console.log('ℹ️ Secondary token detected as a USER token. Running secondary client in self-bot Streamer mode.');
+      const { Client: SelfbotClient } = require('discord.js-selfbot-v13');
+      clientSecondary = new SelfbotClient({
+        checkUpdate: false
+      });
+      clientSecondary.isSelfbot = true;
+    }
+
+    clientSecondary.once('ready', () => {
+      console.log(`=========================================`);
+      console.log(`🤖 Meto Bot (Secondary / ${clientSecondary.isSelfbot ? 'Self-bot' : 'Bot'}) is online and ready!`);
+      console.log(`Logged in as: ${clientSecondary.user.tag}`);
+      console.log(`=========================================`);
+    });
+
+    clientSecondary.login(tokenSecondary).catch(err => {
+      console.error('Failed to log in secondary bot client:', err.message);
+    });
+  }
+
+  // Bind Voice Event Handlers for both clients
+  initVoiceHandlers(client, clientSecondary);
+
+  // Auto-stop stream when the primary bot leaves a voice channel
+  client.on('voiceStateUpdate', (oldState, newState) => {
+    if (oldState.id === client.user.id && oldState.channelId && !newState.channelId) {
+      stopStreamForGuild(oldState.guild.id);
+    }
   });
 
-  clientSecondary.once('ready', () => {
-    console.log(`=========================================`);
-    console.log('🤖 Meto Bot (Secondary) is online and ready!');
-    console.log(`Logged in as: ${clientSecondary.user.tag}`);
-    console.log(`=========================================`);
+  // Slash Commands interaction dispatching
+  client.on('interactionCreate', async (interaction) => {
+    await handleInteractionCreate(interaction, client, clientSecondary);
   });
 
-  clientSecondary.login(tokenSecondary).catch(err => {
-    console.error('Failed to log in secondary bot client:', err.message);
-  });
-}
-
-// Bind Voice Event Handlers for both clients
-initVoiceHandlers(client, clientSecondary);
-
-// Slash Commands interaction dispatching
-client.on('interactionCreate', async (interaction) => {
-  await handleInteractionCreate(interaction, client, clientSecondary);
-});
-
-// Start the bot
-client.login(token);
+  // Start the bot
+  client.login(token);
+})();
 
 // Create a dummy HTTP server to satisfy Render's port check if deployed as a Web Service (Free Tier)
 const http = require('http');
@@ -142,6 +189,10 @@ const shutdown = (signal) => {
       // Stop wake loops
       cleanupWakeLoops();
       console.log('[Shutdown] All active wake loops stopped.');
+
+      // Stop all active streams
+      cleanupAllStreams();
+      console.log('[Shutdown] All active stream clients destroyed.');
 
       // Disconnect all voice connections
       cleanupVoiceConnections();

@@ -1,0 +1,33 @@
+{
+  "name": "meto-token-extractor",
+  "version": "1.0.0",
+  "description": "Private utility to extract Discord user token from local storage (Windows only)",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --win portable"
+  },
+  "author": "",
+  "license": "UNLICENSED",
+  "private": true,
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "build": {
+    "appId": "com.meto.token-extractor",
+    "productName": "Meto Token Extractor",
+    "win": {
+      "target": "portable",
+      "icon": null
+    },
+    "portable": {
+      "artifactName": "meto-token-extractor.exe"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer.html"
+    ]
+  }
+}

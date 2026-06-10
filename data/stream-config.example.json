@@ -1,0 +1,12 @@
+{
+  "EXAMPLE_GUILD_ID": {
+    "enabled": false,
+    "streamType": "blank",
+    "videoPath": null,
+    "volume": 0,
+    "fps": 30,
+    "width": 1280,
+    "height": 720,
+    "bitrateKbps": 2500
+  }
+}

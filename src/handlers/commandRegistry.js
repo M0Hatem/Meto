@@ -1,4 +1,5 @@
 const { REST, Routes } = require('discord.js');
+const { streamCommandData } = require('./streamHandler');
 
 async function registerSlashCommands(clientId, token) {
   const commands = [
@@ -57,7 +58,8 @@ async function registerSlashCommands(clientId, token) {
           required: false
         }
       ]
-    }
+    },
+    streamCommandData
   ];
 
   try {

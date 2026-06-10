@@ -1,8 +1,13 @@
-# Use lightweight Alpine image with Node.js
-FROM node:18-alpine
+# Use lightweight Debian slim image with Node.js
+FROM node:18-slim
 
 # Install Python 3, FFmpeg, curl, and certificates (required for yt-dlp)
-RUN apk add --no-cache python3 ffmpeg curl ca-certificates
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    ffmpeg \
+    curl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
 # Download the latest yt-dlp binary and make it executable
 RUN curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && \

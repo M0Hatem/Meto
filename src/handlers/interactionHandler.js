@@ -1,6 +1,7 @@
 const { PermissionFlagsBits, ChannelType } = require('discord.js');
 const { voiceConnections, setupVoiceConnection } = require('./voiceHandler');
 const { activeWakes, startWakeLoop, stopWakeLoop } = require('./wakeHandler');
+const { handleStreamCommand } = require('./streamHandler');
 
 async function handleInteractionCreate(interaction, client, clientSecondary) {
   if (!interaction.isChatInputCommand()) return;
@@ -222,6 +223,8 @@ async function handleInteractionCreate(interaction, client, clientSecondary) {
         ephemeral: true
       });
     }
+  } else if (commandName === 'stream') {
+    await handleStreamCommand(interaction);
   }
 }
 

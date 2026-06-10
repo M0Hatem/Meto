@@ -82,19 +82,79 @@ npm install
 
 ---
 
+## 📡 Streaming Feature
+
+Meto can stream a blank screen (or video) into a voice channel using a self-bot layer. This makes the bot appear as "Streaming" in the voice channel.
+
+> **⚠️ Warning:** This feature uses a self-bot (a real user account logged in programmatically), which violates Discord's Terms of Service. Use a throwaway/alt account, not your main. Don't stream 24/7.
+
+### Setup
+
+1. **Extract your Discord user token** using the Token Extractor utility:
+   ```bash
+   cd token-extractor
+   npm install
+   npm start
+   ```
+   Click "Extract Token" → "Copy" → paste into your `.env` file.
+
+2. **Add to `.env`:**
+   ```env
+   USER_TOKEN=your_extracted_user_token_here
+   ```
+
+3. **Ensure `ffmpeg` is installed** and on your system PATH (required by the streaming library).
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `/stream start` | Start a blank stream in the current voice channel |
+| `/stream start type:video file:myfile.mp4` | Stream a video file from `streamAssets/` |
+| `/stream stop` | Stop the active stream |
+| `/stream status` | Check current stream info (type, uptime, channel) |
+
+### Notes
+- You must use `/join` first before starting a stream
+- Only one stream per server at a time
+- The stream auto-stops if the bot leaves the voice channel (`/leave`)
+- Only the authorized user can use `/stream`
+
+---
+
 ## 📁 File Structure
 ```
 Meto/
 ├── src/
-│   ├── index.js              # Main bot entry point & Discord client setup
+│   ├── index.js                  # Main bot entry point & Discord client setup
+│   ├── handlers/
+│   │   ├── commandRegistry.js    # Slash command registration
+│   │   ├── interactionHandler.js # Command dispatch
+│   │   ├── messageHandler.js     # Facebook link processing
+│   │   ├── voiceHandler.js       # Voice channel join/leave/reconnect
+│   │   ├── streamHandler.js      # /stream command handler
+│   │   └── wakeHandler.js        # /wake loop management
+│   ├── stream/
+│   │   ├── StreamClient.js       # Self-bot streaming engine
+│   │   ├── streamConfig.js       # Per-guild stream configuration
+│   │   └── streamAssets/         # Video files for stream video mode
 │   └── utils/
-│       ├── linkDetector.js   # Advanced regex matching for Facebook URLs
-│       ├── videoDownloader.js# Controls yt-dlp downloader process & checks size
-│       └── embedBuilder.js   # Builds Discord embeds using Discord.js
-├── temp/                     # Temporary directory for video files (auto-cleaned)
-├── .env                      # Application environment variables (git-ignored)
-├── .env.example              # Template for environment variables
-├── .gitignore                # Files excluded from git tracking
-├── package.json              # Project dependencies & scripts
-└── README.md                 # Project instructions
+│       ├── linkDetector.js       # Facebook URL regex matching
+│       ├── videoDownloader.js    # yt-dlp downloader
+│       ├── embedBuilder.js       # Discord embed builder
+│       └── webhookHandler.js     # Webhook message sender
+├── data/                         # Runtime config storage (git-ignored)
+├── token-extractor/              # Standalone Electron token extraction utility
+│   ├── main.js
+│   ├── preload.js
+│   ├── renderer.html
+│   ├── package.json
+│   └── README.md
+├── temp/                         # Temporary directory for video files (auto-cleaned)
+├── .env                          # Environment variables (git-ignored)
+├── .env.example                  # Template for environment variables
+├── .gitignore
+├── package.json
+└── README.md
 ```
+

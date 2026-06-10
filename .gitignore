@@ -2,3 +2,9 @@ node_modules/
 .env
 temp/
 *.log
+data/stream-config.json
+src/stream/streamAssets/*.mp4
+src/stream/streamAssets/*.webm
+src/stream/streamAssets/*.mkv
+token-extractor/node_modules/
+token-extractor/dist/

@@ -1,4 +1,14 @@
 const { joinVoiceChannel, VoiceConnectionStatus } = require('@discordjs/voice');
+const { Streamer } = require('@dank074/discord-video-stream');
+
+let secondaryStreamer = null;
+
+function getSecondaryStreamer(clientSecondary) {
+  if (!secondaryStreamer && clientSecondary) {
+    secondaryStreamer = new Streamer(clientSecondary);
+  }
+  return secondaryStreamer;
+}
 
 // Track voice connections globally (guildId -> { primary: state, secondary: state })
 // state = { connection, channelId, authorizedDisconnect }
@@ -7,6 +17,33 @@ const voiceConnections = new Map();
 // Helper function to set up and manage voice connections for a specific bot client (type: 'primary' | 'secondary')
 async function setupVoiceConnection(botClient, guild, channel, type = 'primary') {
   try {
+    if (type === 'secondary' && botClient.isSelfbot) {
+      const streamer = getSecondaryStreamer(botClient);
+      if (!streamer) {
+        throw new Error('Secondary streamer client is not ready or not initialized.');
+      }
+
+      await streamer.joinVoice(guild.id, channel.id, {
+        selfDeaf: false,
+        selfMute: true,
+        selfVideo: false
+      });
+
+      if (!voiceConnections.has(guild.id)) {
+        voiceConnections.set(guild.id, {});
+      }
+
+      const guildConns = voiceConnections.get(guild.id);
+      guildConns[type] = {
+        connection: streamer,
+        channelId: channel.id,
+        authorizedDisconnect: false
+      };
+
+      console.log(`[Voice - secondary] Joined VC ${channel.id} in guild ${guild.id} via Streamer.`);
+      return;
+    }
+
     // Fetch the guild using the specific client instance to obtain its correct voiceAdapterCreator
     const targetGuild = await botClient.guilds.fetch(guild.id).catch(() => guild);
 
@@ -101,16 +138,47 @@ function cleanupVoiceConnections() {
     if (guildConns.secondary) {
       try {
         guildConns.secondary.authorizedDisconnect = true;
-        guildConns.secondary.connection.destroy();
+        if (typeof guildConns.secondary.connection.leaveVoice === 'function') {
+          guildConns.secondary.connection.leaveVoice();
+        } else {
+          guildConns.secondary.connection.destroy();
+        }
       } catch (e) {}
     }
   }
   voiceConnections.clear();
 }
 
+/**
+ * Returns the internal voiceConnections Map.
+ * Structure: guildId -> { primary: { connection, channelId, authorizedDisconnect }, secondary: ... }
+ * @returns {Map}
+ */
+function getActiveConnections() {
+  return voiceConnections;
+}
+
+/**
+ * Check whether the primary bot has an active (non-destroyed) voice connection in a guild.
+ * @param {string} guildId
+ * @returns {boolean}
+ */
+function isInVC(guildId) {
+  const guildConns = voiceConnections.get(guildId);
+  if (!guildConns || !guildConns.primary) return false;
+  try {
+    return guildConns.primary.connection.state.status !== 'destroyed';
+  } catch {
+    return false;
+  }
+}
+
 module.exports = {
   voiceConnections,
   setupVoiceConnection,
   initVoiceHandlers,
-  cleanupVoiceConnections
+  cleanupVoiceConnections,
+  getActiveConnections,
+  isInVC,
+  getSecondaryStreamer
 };
