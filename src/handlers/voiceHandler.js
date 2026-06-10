@@ -83,6 +83,21 @@ async function setupVoiceConnection(botClient, guild, channel, type = 'primary')
         const currentGuildConns = voiceConnections.get(guild.id);
         const state = currentGuildConns ? currentGuildConns[type] : null;
         if (state && !state.authorizedDisconnect) {
+          // Check if channel was deleted
+          let channelExists = guild.channels.cache.has(channel.id);
+          if (!channelExists) {
+            try {
+              const fetched = await guild.channels.fetch(channel.id);
+              channelExists = !!fetched;
+            } catch (err) {
+              channelExists = false;
+            }
+          }
+          if (!channelExists) {
+            console.log(`[Voice - ${type}] Target VC ${channel.id} does not exist anymore. Skipping Disconnected event rejoin.`);
+            return;
+          }
+
           console.log(`[Voice - ${type}] Disconnected from voice in guild ${guild.id}. Reconnecting...`);
           try {
             await setupVoiceConnection(botClient, guild, channel, type);
@@ -111,6 +126,23 @@ async function handleVoiceStateUpdate(botClient, type, oldState, newState) {
     // If the bot has active connection and shouldn't be disconnected
     if (state && !state.authorizedDisconnect) {
       if (newState.channelId === null) {
+        // Check if the channel still exists in the guild.
+        // If the channel was deleted, skip standard voiceStateUpdate rejoining.
+        let channelExists = newState.guild.channels.cache.has(state.channelId);
+        if (!channelExists) {
+          try {
+            const fetched = await newState.guild.channels.fetch(state.channelId);
+            channelExists = !!fetched;
+          } catch (fetchErr) {
+            channelExists = false;
+          }
+        }
+
+        if (!channelExists) {
+          console.log(`[Voice - ${type}] Target VC ${state.channelId} does not exist anymore (possibly deleted). Skipping standard voiceStateUpdate rejoin.`);
+          return;
+        }
+
         console.log(`[Voice - ${type}] Kicked/Disconnected from target channel ${state.channelId} in guild ${guildId}. Rejoining...`);
         try {
           await setupVoiceConnection(botClient, newState.guild, { id: state.channelId }, type);

@@ -152,10 +152,63 @@ let clientSecondary = null;
   // Bind Voice Event Handlers for both clients
   initVoiceHandlers(client, clientSecondary);
 
-  // Auto-stop stream when the primary bot leaves a voice channel
+  // Auto-stop stream when the primary bot leaves a voice channel (only if it's an authorized disconnect, e.g. via /leave)
   client.on('voiceStateUpdate', (oldState, newState) => {
     if (oldState.id === client.user.id && oldState.channelId && !newState.channelId) {
-      stopStreamForGuild(oldState.guild.id);
+      const { voiceConnections } = require('./handlers/voiceHandler');
+      const guildConns = voiceConnections.get(oldState.guild.id);
+      const isAuthorized = guildConns?.primary?.authorizedDisconnect;
+      if (isAuthorized) {
+        stopStreamForGuild(oldState.guild.id);
+      }
+    }
+  });
+
+  // Handle voice channel deletion: recreate the channel and rejoin bots automatically
+  client.on('channelDelete', async (channel) => {
+    const { ChannelType } = require('discord.js');
+    if (channel.type !== ChannelType.GuildVoice) return;
+
+    const guildId = channel.guild.id;
+    const { voiceConnections, setupVoiceConnection } = require('./handlers/voiceHandler');
+    const guildConns = voiceConnections.get(guildId);
+
+    if (guildConns) {
+      const isTargetChannel = (guildConns.primary && guildConns.primary.channelId === channel.id) ||
+                              (guildConns.secondary && guildConns.secondary.channelId === channel.id);
+
+      if (isTargetChannel) {
+        console.log(`[Voice] Target VC "${channel.name}" (${channel.id}) was deleted in guild ${guildId}! Recreating and rejoining...`);
+        try {
+          // Clone the deleted channel with the exact same properties (name, category, permissions, settings)
+          const newChannel = await channel.clone({
+            reason: 'Restoring deleted voice channel containing Meto Bot'
+          });
+          console.log(`[Voice] Recreated channel "${channel.name}" (new ID: ${newChannel.id}) in guild ${guildId}`);
+
+          // Update tracked channel ID for active connections
+          if (guildConns.primary) {
+            guildConns.primary.channelId = newChannel.id;
+          }
+          if (guildConns.secondary) {
+            guildConns.secondary.channelId = newChannel.id;
+          }
+
+          // Rejoin primary client
+          if (guildConns.primary) {
+            console.log(`[Voice - primary] Rejoining new channel ${newChannel.id}...`);
+            await setupVoiceConnection(client, channel.guild, newChannel, 'primary');
+          }
+
+          // Rejoin secondary client (user token self-bot or bot token)
+          if (guildConns.secondary && clientSecondary && clientSecondary.readyAt) {
+            console.log(`[Voice - secondary] Rejoining new channel ${newChannel.id}...`);
+            await setupVoiceConnection(clientSecondary, channel.guild, newChannel, 'secondary');
+          }
+        } catch (err) {
+          console.error('[Voice] Failed to recreate deleted channel or rejoin bots:', err);
+        }
+      }
     }
   });
 
