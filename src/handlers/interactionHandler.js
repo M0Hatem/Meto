@@ -57,24 +57,56 @@ async function handleInteractionCreate(interaction, client, clientSecondary) {
       });
     }
 
+    // Defer reply to prevent Discord API interaction timeout (3 seconds)
+    await interaction.deferReply({ ephemeral: true });
+
     try {
+      // Auto-stop stream if active
+      try {
+        const { stopStreamForGuild } = require('./streamHandler');
+        stopStreamForGuild(interaction.guildId);
+      } catch (streamErr) {
+        console.error('[Voice] Error stopping stream on leave:', streamErr);
+      }
+
+      // Disconnect primary bot
       if (guildConns.primary) {
-        guildConns.primary.authorizedDisconnect = true;
-        guildConns.primary.connection.destroy();
+        try {
+          guildConns.primary.authorizedDisconnect = true;
+          if (guildConns.primary.connection) {
+            guildConns.primary.connection.destroy();
+          }
+        } catch (err) {
+          console.error('[Voice] Error destroying primary connection:', err);
+        }
       }
+
+      // Disconnect secondary bot (self-bot streamer or normal connection)
       if (guildConns.secondary) {
-        guildConns.secondary.authorizedDisconnect = true;
-        guildConns.secondary.connection.destroy();
+        try {
+          guildConns.secondary.authorizedDisconnect = true;
+          const conn = guildConns.secondary.connection;
+          if (conn) {
+            if (typeof conn.leaveVoice === 'function') {
+              conn.leaveVoice();
+            } else if (typeof conn.destroy === 'function') {
+              conn.destroy();
+            }
+          }
+        } catch (err) {
+          console.error('[Voice] Error destroying secondary connection:', err);
+        }
       }
+
       voiceConnections.delete(interaction.guildId);
-      await interaction.reply({
+
+      await interaction.editReply({
         content: '👋 Left the voice channel successfully.',
       });
     } catch (error) {
       console.error('[Voice] Error leaving channel:', error);
-      await interaction.reply({
+      await interaction.editReply({
         content: '❌ Failed to leave the voice channel.',
-        ephemeral: true
       });
     }
   } else if (commandName === 'wake') {
