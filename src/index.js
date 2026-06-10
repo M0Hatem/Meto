@@ -137,7 +137,7 @@ let clientSecondary = null;
       clientSecondary.isSelfbot = true;
     }
 
-    clientSecondary.once('ready', () => {
+    clientSecondary.once('ready', async () => {
       console.log(`=========================================`);
       console.log(`🤖 Meto Bot (Secondary / ${clientSecondary.isSelfbot ? 'Self-bot' : 'Bot'}) is online and ready!`);
       console.log(`Logged in as: ${clientSecondary.user.tag}`);
@@ -152,8 +152,20 @@ let clientSecondary = null;
             .setType('STREAMING')
             .setURL('https://www.twitch.tv/m16afk')
             .setName('m16afk')
-            .setDetails('Streaming')
-            .setAssetsLargeImage('1118658289161478275');
+            .setDetails('m16afk');
+
+          // Try fetching the target user to use its avatar as the streaming status image
+          try {
+            const user = await clientSecondary.users.fetch('1118658289161478275');
+            const avatarUrl = user.displayAvatarURL({ format: 'png', size: 1024 });
+            if (avatarUrl) {
+              r.setAssetsLargeImage(avatarUrl);
+            }
+          } catch (fetchErr) {
+            console.warn('⚠️ Could not fetch user avatar for RichPresence, falling back to app ID:', fetchErr.message);
+            r.setAssetsLargeImage('1118658289161478275');
+          }
+
           clientSecondary.user.setActivity(r);
         } else {
           const { ActivityType } = require('discord.js');
