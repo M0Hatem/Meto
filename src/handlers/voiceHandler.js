@@ -1,10 +1,10 @@
 const { joinVoiceChannel, VoiceConnectionStatus } = require('@discordjs/voice');
-const { Streamer } = require('@dank074/discord-video-stream');
 
 let secondaryStreamer = null;
 
-function getSecondaryStreamer(clientSecondary) {
+async function getSecondaryStreamer(clientSecondary) {
   if (!secondaryStreamer && clientSecondary) {
+    const { Streamer } = await import('@dank074/discord-video-stream');
     secondaryStreamer = new Streamer(clientSecondary);
   }
   return secondaryStreamer;
@@ -18,7 +18,7 @@ const voiceConnections = new Map();
 async function setupVoiceConnection(botClient, guild, channel, type = 'primary') {
   try {
     if (type === 'secondary' && botClient.isSelfbot) {
-      const streamer = getSecondaryStreamer(botClient);
+      const streamer = await getSecondaryStreamer(botClient);
       if (!streamer) {
         throw new Error('Secondary streamer client is not ready or not initialized.');
       }
