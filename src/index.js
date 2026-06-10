@@ -154,15 +154,24 @@ let clientSecondary = null;
             .setName('m16afk')
             .setDetails('m16afk');
 
-          // Try fetching the target user to use its avatar as the streaming status image
+           // Try fetching the target user and register its avatar as an external asset to get the correct proxy path
           try {
             const user = await clientSecondary.users.fetch('1118658289161478275');
             const avatarUrl = user.displayAvatarURL({ format: 'png', size: 1024 });
             if (avatarUrl) {
-              r.setAssetsLargeImage(avatarUrl);
+              const [externalAsset] = await RichPresence.getExternal(
+                clientSecondary,
+                '1118658289161478275',
+                avatarUrl
+              );
+              if (externalAsset && externalAsset.external_asset_path) {
+                r.setAssetsLargeImage(externalAsset.external_asset_path);
+              } else {
+                r.setAssetsLargeImage('1118658289161478275');
+              }
             }
           } catch (fetchErr) {
-            console.warn('⚠️ Could not fetch user avatar for RichPresence, falling back to app ID:', fetchErr.message);
+            console.warn('⚠️ Could not fetch user avatar or get external asset for RichPresence:', fetchErr.message);
             r.setAssetsLargeImage('1118658289161478275');
           }
 
