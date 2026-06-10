@@ -142,6 +142,28 @@ let clientSecondary = null;
       console.log(`🤖 Meto Bot (Secondary / ${clientSecondary.isSelfbot ? 'Self-bot' : 'Bot'}) is online and ready!`);
       console.log(`Logged in as: ${clientSecondary.user.tag}`);
       console.log(`=========================================`);
+
+      // Set Twitch streaming status
+      try {
+        if (clientSecondary.isSelfbot) {
+          clientSecondary.user.setActivity('m16afk', {
+            type: 'STREAMING',
+            url: 'https://www.twitch.tv/m16afk'
+          });
+        } else {
+          const { ActivityType } = require('discord.js');
+          clientSecondary.user.setPresence({
+            activities: [{
+              name: 'm16afk',
+              type: ActivityType.Streaming,
+              url: 'https://www.twitch.tv/m16afk'
+            }]
+          });
+        }
+        console.log(`📡 Set secondary client activity to Streaming m16afk (Twitch).`);
+      } catch (activityErr) {
+        console.error('⚠️ Failed to set secondary client activity:', activityErr.message);
+      }
     });
 
     clientSecondary.login(tokenSecondary).catch(err => {
