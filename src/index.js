@@ -146,10 +146,15 @@ let clientSecondary = null;
       // Set Twitch streaming status
       try {
         if (clientSecondary.isSelfbot) {
-          clientSecondary.user.setActivity('m16afk', {
-            type: 'STREAMING',
-            url: 'https://www.twitch.tv/m16afk'
-          });
+          const { RichPresence } = require('discord.js-selfbot-v13');
+          const r = new RichPresence(clientSecondary)
+            .setApplicationId('1118658289161478275')
+            .setType('STREAMING')
+            .setURL('https://www.twitch.tv/m16afk')
+            .setName('m16afk')
+            .setDetails('Streaming')
+            .setAssetsLargeImage('1118658289161478275');
+          clientSecondary.user.setActivity(r);
         } else {
           const { ActivityType } = require('discord.js');
           clientSecondary.user.setPresence({
