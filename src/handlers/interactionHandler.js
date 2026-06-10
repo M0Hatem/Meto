@@ -17,6 +17,9 @@ async function handleInteractionCreate(interaction, client, clientSecondary) {
       });
     }
 
+    // Defer the reply since joining (especially for self-bot) can take longer than 3 seconds
+    await interaction.deferReply();
+
     try {
       // Connect primary bot
       await setupVoiceConnection(client, interaction.guild, member.voice.channel, 'primary');
@@ -28,14 +31,13 @@ async function handleInteractionCreate(interaction, client, clientSecondary) {
         secondaryJoinedMessage = ` (along with **${clientSecondary.user.username}**)`;
       }
 
-      await interaction.reply({
+      await interaction.editReply({
         content: `🔊 Joined voice channel **${member.voice.channel.name}**${secondaryJoinedMessage}! I will remain here indefinitely.`,
       });
     } catch (error) {
       console.error('[Voice] Error joining channel:', error);
-      await interaction.reply({
+      await interaction.editReply({
         content: '❌ Failed to join the voice channel.',
-        ephemeral: true
       });
     }
   } else if (commandName === 'leave') {
