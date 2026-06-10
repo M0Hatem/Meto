@@ -1,5 +1,5 @@
 # Use lightweight Debian slim image with Node.js
-FROM node:18-slim
+FROM node:22-slim
 
 # Install Python 3, FFmpeg, curl, and certificates (required for yt-dlp)
 RUN apt-get update && apt-get install -y --no-install-recommends \
