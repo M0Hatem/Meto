@@ -70,13 +70,13 @@ function loadAllowedServers(filePath) {
         console.log(`🔒 Loaded ${ids.length} allowed server ID(s) from JSON file: ${resolvedPath}`);
         return ids;
       }
-    } catch (jsonErr) {}
+    } catch (jsonErr) { }
 
     const ids = content
       .split(/\r?\n/)
       .map(line => line.trim())
       .filter(line => line && !line.startsWith('#') && !line.startsWith('//'));
-    
+
     console.log(`🔒 Loaded ${ids.length} allowed server ID(s) from text file: ${resolvedPath}`);
     return ids;
   } catch (err) {
@@ -151,28 +151,18 @@ let clientSecondary = null;
             .setApplicationId('1118658289161478275')
             .setType('STREAMING')
             .setURL('https://www.twitch.tv/m16afk')
-            .setName('m16afk')
-            .setDetails('m16afk');
+            .setName('M16')
+            .setDetails('KD');
 
-           // Try fetching the target user and register its avatar as an external asset to get the correct proxy path
+          // Try fetching the target user and set its avatar as the large image
           try {
             const user = await clientSecondary.users.fetch('1118658289161478275');
             const avatarUrl = user.displayAvatarURL({ format: 'png', size: 1024 });
             if (avatarUrl) {
-              const [externalAsset] = await RichPresence.getExternal(
-                clientSecondary,
-                '1118658289161478275',
-                avatarUrl
-              );
-              if (externalAsset && externalAsset.external_asset_path) {
-                r.setAssetsLargeImage(externalAsset.external_asset_path);
-              } else {
-                r.setAssetsLargeImage('1118658289161478275');
-              }
+              r.setAssetsLargeImage(avatarUrl);
             }
           } catch (fetchErr) {
-            console.warn('⚠️ Could not fetch user avatar or get external asset for RichPresence:', fetchErr.message);
-            r.setAssetsLargeImage('1118658289161478275');
+            console.warn('⚠️ Could not fetch user avatar for RichPresence:', fetchErr.message);
           }
 
           clientSecondary.user.setActivity(r);
@@ -223,7 +213,7 @@ let clientSecondary = null;
 
     if (guildConns) {
       const isTargetChannel = (guildConns.primary && guildConns.primary.channelId === channel.id) ||
-                              (guildConns.secondary && guildConns.secondary.channelId === channel.id);
+        (guildConns.secondary && guildConns.secondary.channelId === channel.id);
 
       if (isTargetChannel) {
         console.log(`[Voice] Target VC "${channel.name}" (${channel.id}) was deleted in guild ${guildId}! Recreating and rejoining...`);
