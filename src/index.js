@@ -110,6 +110,7 @@ const allowedServers = loadAllowedServers(process.env.ALLOWED_SERVERS_FILE);
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers, // Required to fetch member lists for broadcast
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildVoiceStates

@@ -182,16 +182,15 @@ async function runBroadcast(guild, targetRoleStr, rawMessage, channelOption, cli
     // Update status to preparing DM
     await sendProgressUpdate(formatProgressBar(successCount, failCount, members.length, `✉️ Sending message to **${member.user.tag}**...`));
 
+    let resultStatus = '';
     try {
       // Fetch user profile on secondary client to open DM channel
       const secondaryUserObj = await clientSecondary.users.fetch(member.id);
       await secondaryUserObj.send(finalMessage);
       successCount++;
+      resultStatus = `✅ Sent message to **${member.user.tag}**.`;
       console.log(`[Broadcast] [${i+1}/${members.length}] Successfully sent DM to ${member.user.tag}`);
     } catch (dmErr) {
-      failCount++;
-      console.error(`[Broadcast] [${i+1}/${members.length}] Failed to send DM to ${member.user.tag}:`, dmErr.message);
-      
       // If we hit a rate limit (429), handle it
       if (dmErr.status === 429 || dmErr.code === 50035 || dmErr.message.toLowerCase().includes('rate limit')) {
         const retryAfter = (dmErr.retry_after || 10);
@@ -202,13 +201,16 @@ async function runBroadcast(guild, targetRoleStr, rawMessage, channelOption, cli
         await new Promise(resolve => setTimeout(resolve, (retryAfter * 1000) + 2000));
         // Retry the current user
         i--;
-        failCount--;
         continue;
       }
+
+      failCount++;
+      resultStatus = `❌ Failed to DM **${member.user.tag}** (${dmErr.message}).`;
+      console.error(`[Broadcast] [${i+1}/${members.length}] Failed to send DM to ${member.user.tag}:`, dmErr.message);
     }
 
-    // Update progress message in Discord every DM or at the end
-    await sendProgressUpdate(formatProgressBar(successCount, failCount, members.length, `✅ Sent message to **${member.user.tag}**.`));
+    // Update progress message in Discord with the correct outcome of the DM send
+    await sendProgressUpdate(formatProgressBar(successCount, failCount, members.length, resultStatus));
 
     // Anti-detection pauses
     if (i < members.length - 1) {
