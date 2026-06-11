@@ -181,6 +181,7 @@ async function restartStreamIfActive(guildId) {
 }
 
 module.exports = {
+  activeStreams,
   streamCommandData,
   handleStreamCommand,
   stopStreamForGuild,

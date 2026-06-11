@@ -4,6 +4,15 @@ const path = require('path');
 const https = require('https');
 const { Client, GatewayIntentBits } = require('discord.js');
 
+// Global exception and rejection handlers to prevent asynchronous library crashes from stopping the bot
+process.on('uncaughtException', (err) => {
+  console.error('[Uncaught Exception]', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[Unhandled Rejection] at:', promise, 'reason:', reason);
+});
+
 function checkIsBotToken(token) {
   return new Promise((resolve) => {
     if (!token) return resolve(false);
@@ -189,6 +198,58 @@ let clientSecondary = null;
 
   // Bind Voice Event Handlers for both clients
   initVoiceHandlers(client, clientSecondary);
+
+  // Periodically check (every 5 minutes) if the secondary bot stream should be active but is closed, and restore it
+  setInterval(async () => {
+    if (!clientSecondary || !clientSecondary.readyAt) return;
+
+    const { getActiveConnections, setupVoiceConnection } = require('./handlers/voiceHandler');
+    const { activeStreams, restartStreamIfActive } = require('./handlers/streamHandler');
+
+    for (const [guildId, activeInfo] of activeStreams.entries()) {
+      try {
+        const guildConns = getActiveConnections().get(guildId);
+        if (!guildConns || !guildConns.primary) {
+          // Primary bot is not in voice in this guild, skip
+          continue;
+        }
+
+        const primaryChannelId = guildConns.primary.channelId;
+        const guild = client.guilds.cache.get(guildId);
+        if (!guild) continue;
+        const channel = guild.channels.cache.get(primaryChannelId);
+        if (!channel) continue;
+
+        let needRejoin = false;
+        let needStreamRestart = false;
+
+        if (!guildConns.secondary || !guildConns.secondary.connection) {
+          needRejoin = true;
+        } else {
+          const streamer = guildConns.secondary.connection;
+          if (!streamer.voiceConnection) {
+            needRejoin = true;
+          } else if (!streamer.voiceConnection.streamConnection) {
+            needStreamRestart = true;
+          }
+        }
+
+        if (needRejoin) {
+          console.log(`[StreamMonitor] Secondary bot should be streaming in guild ${guildId} but is not joined. Joining...`);
+          // Clean up any stale secondary connection state first to prevent double-joining conflicts
+          if (guildConns.secondary && guildConns.secondary.connection) {
+            try { guildConns.secondary.connection.leaveVoice(); } catch (_) {}
+          }
+          await setupVoiceConnection(clientSecondary, guild, channel, 'secondary');
+        } else if (needStreamRestart) {
+          console.log(`[StreamMonitor] Secondary bot is joined but not streaming in guild ${guildId}. Restarting stream...`);
+          await restartStreamIfActive(guildId);
+        }
+      } catch (monitorErr) {
+        console.error(`[StreamMonitor] Error checking/restoring stream in guild ${guildId}:`, monitorErr.message);
+      }
+    }
+  }, 5 * 60 * 1000); // 5 minutes
 
   // Auto-stop stream when the primary bot leaves a voice channel (only if it's an authorized disconnect, e.g. via /leave)
   client.on('voiceStateUpdate', (oldState, newState) => {

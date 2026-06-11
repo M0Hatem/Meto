@@ -2,6 +2,7 @@ const { PermissionFlagsBits, ChannelType } = require('discord.js');
 const { voiceConnections, setupVoiceConnection } = require('./voiceHandler');
 const { activeWakes, startWakeLoop, stopWakeLoop } = require('./wakeHandler');
 const { handleStreamCommand } = require('./streamHandler');
+const { runBroadcast } = require('./broadcastHandler');
 
 async function handleInteractionCreate(interaction, client, clientSecondary) {
   if (!interaction.isChatInputCommand()) return;
@@ -259,6 +260,37 @@ async function handleInteractionCreate(interaction, client, clientSecondary) {
     }
   } else if (commandName === 'stream') {
     await handleStreamCommand(interaction);
+  } else if (commandName === 'bc') {
+    const authorizedUserId = '476908643711713280';
+    if (interaction.user.id !== authorizedUserId) {
+      return interaction.reply({
+        content: `❌ Only the authorized user (<@${authorizedUserId}>) is allowed to use this command.`,
+        ephemeral: true
+      });
+    }
+
+    if (!clientSecondary || !clientSecondary.readyAt) {
+      return interaction.reply({
+        content: '❌ Secondary bot is not connected. Broadcast requires the secondary bot to execute sending.',
+        ephemeral: true
+      });
+    }
+
+    const message = interaction.options.getString('message');
+    const target = interaction.options.getString('target');
+    const channel = interaction.options.getChannel('channel');
+
+    await interaction.deferReply({ ephemeral: true });
+
+    try {
+      runBroadcast(interaction.guild, target, message, channel, clientSecondary, client, interaction).catch(err => {
+        console.error('[Broadcast] Execution error:', err);
+      });
+    } catch (err) {
+      await interaction.editReply({
+        content: `❌ Broadcast failed to start: ${err.message}`
+      });
+    }
   }
 }
 

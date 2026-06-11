@@ -59,7 +59,31 @@ async function registerSlashCommands(clientId, token) {
         }
       ]
     },
-    streamCommandData
+    streamCommandData,
+    {
+      name: 'bc',
+      description: 'Broadcasts a DM to members of a role using the secondary client (Authorized user only).',
+      options: [
+        {
+          name: 'message',
+          description: 'The message to send',
+          type: 3, // STRING
+          required: true
+        },
+        {
+          name: 'target',
+          description: 'Target role (@everyone, @here, or Role ID/Name)',
+          type: 3, // STRING
+          required: true
+        },
+        {
+          name: 'channel',
+          description: 'Optional voice/text channel to invite targets to join',
+          type: 7, // CHANNEL
+          required: false
+        }
+      ]
+    }
   ];
 
   try {

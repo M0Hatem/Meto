@@ -4,7 +4,29 @@ let secondaryStreamer = null;
 
 async function getSecondaryStreamer(clientSecondary) {
   if (!secondaryStreamer && clientSecondary) {
-    const { Streamer } = await import('@dank074/discord-video-stream');
+    const pkg = await import('@dank074/discord-video-stream');
+    const { Streamer, BaseMediaConnection, VoiceOpCodesBinary } = pkg;
+
+    // Patch BaseMediaConnection to prevent the MLS_PROPOSALS crash
+    if (BaseMediaConnection && BaseMediaConnection.prototype && BaseMediaConnection.prototype.handleBinaryMessages) {
+      const originalHandleBinaryMessages = BaseMediaConnection.prototype.handleBinaryMessages;
+      BaseMediaConnection.prototype.handleBinaryMessages = function (msg) {
+        const op = msg.readUint8(2);
+        if (op === VoiceOpCodesBinary.MLS_PROPOSALS && !this._daveSession) {
+          if (this._loggerDave && typeof this._loggerDave.debug === 'function') {
+            this._loggerDave.debug("MLS proposal received but DAVE session is not initialized. Skipping to avoid crash.");
+          }
+          return;
+        }
+        try {
+          originalHandleBinaryMessages.call(this, msg);
+        } catch (err) {
+          console.error('[BaseMediaConnection] Error handling binary message:', err);
+        }
+      };
+      console.log('🛡️ Successfully patched BaseMediaConnection.handleBinaryMessages to prevent MLS_PROPOSALS crashes.');
+    }
+
     secondaryStreamer = new Streamer(clientSecondary);
   }
   return secondaryStreamer;
