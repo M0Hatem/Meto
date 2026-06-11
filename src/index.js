@@ -139,8 +139,9 @@ client.on('messageCreate', async (message) => {
   await handleMessageCreate(message, client, allowedServers, MAX_FILE_SIZE_MB);
 });
 
-// Initialize and login Secondary Bot if configured
+// Initialize and login Secondary and Tertiary Bots if configured
 let clientSecondary = null;
+let clientTertiary = null;
 
 (async () => {
   if (tokenSecondary && tokenSecondary !== 'replace_this_with_your_actual_bot_token' && tokenSecondary.trim() !== '') {
@@ -214,7 +215,6 @@ let clientSecondary = null;
   }
 
   // Initialize and login Tertiary Bot if configured
-  let clientTertiary = null;
   if (tokenTertiary && tokenTertiary !== 'replace_this_with_your_actual_bot_token' && tokenTertiary.trim() !== '') {
     const isBot = await checkIsBotToken(tokenTertiary);
     if (isBot) {
