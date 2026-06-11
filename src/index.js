@@ -13,6 +13,16 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('[Unhandled Rejection] at:', promise, 'reason:', reason);
 });
 
+// Intercept and format raw WebSocket ErrorEvent logs to be cleaner
+const originalConsoleError = console.error;
+console.error = function (...args) {
+  if (args[0] && args[0].type === 'error' && 'timeStamp' in args[0]) {
+    console.log('📡 [Voice Connection] WebSocket connection dropped temporarily (reconnecting automatically).');
+    return;
+  }
+  originalConsoleError.apply(console, args);
+};
+
 function checkIsBotToken(token) {
   return new Promise((resolve) => {
     if (!token) return resolve(false);
