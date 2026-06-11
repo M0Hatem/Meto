@@ -86,8 +86,10 @@ async function handleStreamCommand(interaction) {
   try {
     const config = getStreamConfig(guildId);
 
-    // Create stream connection (Go Live / Screen-Share)
-    await streamer.createStream({
+    // Create stream connection (Go Live / Screen-Share) asynchronously in the background.
+    // discord-video-stream's createStream resolves after establishing the WebRTC link,
+    // which can take several seconds and cause slash command reply timeouts.
+    streamer.createStream({
       width: config.width || 1280,
       height: config.height || 720,
       fps: config.fps || 30,
@@ -96,6 +98,8 @@ async function handleStreamCommand(interaction) {
       videoCodec: 'H264',
       readAtNativeFps: true,
       hardwareAcceleratedDecoding: false
+    }).catch(err => {
+      console.error('[StreamHandler] Background createStream failed:', err.message);
     });
 
     // We do NOT call playVideo() to avoid running FFmpeg and consuming bandwidth.

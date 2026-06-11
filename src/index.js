@@ -56,6 +56,12 @@ if (!tokenSecondary || tokenSecondary === 'replace_this_with_your_actual_bot_tok
   console.warn('⚠️  DISCORD_TOKEN_SECONDARY is not set in .env. The secondary client (self-bot) and /stream command will be disabled.');
 }
 
+// Validate tertiary client (standard bot token) for broadcasting
+const tokenTertiary = process.env.DISCORD_TOKEN_TERTIARY;
+if (!tokenTertiary || tokenTertiary === 'replace_this_with_your_actual_bot_token' || tokenTertiary.trim() === '') {
+  console.log('ℹ️  DISCORD_TOKEN_TERTIARY is not set in .env. The /bc command will fall back to the secondary bot.');
+}
+
 // Validate Discord token
 const token = process.env.DISCORD_TOKEN;
 if (!token || token === 'replace_this_with_your_actual_bot_token') {
@@ -207,6 +213,40 @@ let clientSecondary = null;
     });
   }
 
+  // Initialize and login Tertiary Bot if configured
+  let clientTertiary = null;
+  if (tokenTertiary && tokenTertiary !== 'replace_this_with_your_actual_bot_token' && tokenTertiary.trim() !== '') {
+    const isBot = await checkIsBotToken(tokenTertiary);
+    if (isBot) {
+      console.log('ℹ️ Tertiary token detected as a BOT token. Running tertiary client in standard Bot mode.');
+      clientTertiary = new Client({
+        intents: [
+          GatewayIntentBits.Guilds,
+          GatewayIntentBits.GuildVoiceStates
+        ]
+      });
+      clientTertiary.isSelfbot = false;
+    } else {
+      console.log('ℹ️ Tertiary token detected as a USER token. Running tertiary client in self-bot mode.');
+      const { Client: SelfbotClient } = require('discord.js-selfbot-v13');
+      clientTertiary = new SelfbotClient({
+        checkUpdate: false
+      });
+      clientTertiary.isSelfbot = true;
+    }
+
+    clientTertiary.once('ready', () => {
+      console.log(`=========================================`);
+      console.log(`🤖 Meto Bot (Tertiary / ${clientTertiary.isSelfbot ? 'Self-bot' : 'Bot'}) is online and ready!`);
+      console.log(`Logged in as: ${clientTertiary.user.tag}`);
+      console.log(`=========================================`);
+    });
+
+    clientTertiary.login(tokenTertiary).catch(err => {
+      console.error('Failed to log in tertiary bot client:', err.message);
+    });
+  }
+
   // Bind Voice Event Handlers for both clients
   initVoiceHandlers(client, clientSecondary);
 
@@ -324,7 +364,7 @@ let clientSecondary = null;
 
   // Slash Commands interaction dispatching
   client.on('interactionCreate', async (interaction) => {
-    await handleInteractionCreate(interaction, client, clientSecondary);
+    await handleInteractionCreate(interaction, client, clientSecondary, clientTertiary);
   });
 
   // Start the bot
@@ -367,6 +407,11 @@ const shutdown = (signal) => {
       if (clientSecondary) {
         clientSecondary.destroy();
         console.log('[Shutdown] Discord client (secondary) connection destroyed.');
+      }
+
+      if (clientTertiary) {
+        clientTertiary.destroy();
+        console.log('[Shutdown] Discord client (tertiary) connection destroyed.');
       }
     } catch (err) {
       console.error('[Shutdown] Error destroying Discord client:', err.message);

@@ -4,7 +4,7 @@ const { activeWakes, startWakeLoop, stopWakeLoop } = require('./wakeHandler');
 const { handleStreamCommand } = require('./streamHandler');
 const { runBroadcast } = require('./broadcastHandler');
 
-async function handleInteractionCreate(interaction, client, clientSecondary) {
+async function handleInteractionCreate(interaction, client, clientSecondary, clientTertiary) {
   if (!interaction.isChatInputCommand()) return;
 
   const { commandName } = interaction;
@@ -269,9 +269,10 @@ async function handleInteractionCreate(interaction, client, clientSecondary) {
       });
     }
 
-    if (!clientSecondary || !clientSecondary.readyAt) {
+    const senderClient = (clientTertiary && clientTertiary.readyAt) ? clientTertiary : clientSecondary;
+    if (!senderClient || !senderClient.readyAt) {
       return interaction.reply({
-        content: '❌ Secondary bot is not connected. Broadcast requires the secondary bot to execute sending.',
+        content: '❌ No active sending bot client connected (neither tertiary bot nor secondary bot is online).',
         ephemeral: true
       });
     }
@@ -283,7 +284,7 @@ async function handleInteractionCreate(interaction, client, clientSecondary) {
     await interaction.deferReply({ ephemeral: true });
 
     try {
-      runBroadcast(interaction.guild, target, message, channel, clientSecondary, client, interaction).catch(err => {
+      runBroadcast(interaction.guild, target, message, channel, senderClient, client, interaction).catch(err => {
         console.error('[Broadcast] Execution error:', err);
       });
     } catch (err) {
