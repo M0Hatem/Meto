@@ -257,14 +257,15 @@ async function handleBotDisconnected(guild, executorId, secondaryClient, primary
     const remaining = MAX_STRIKES - data.strikes;
     const nextTier = Math.min(data.tier + 1, 2);
     const tierLabel = nextTier === 1
-      ? 'Tier 1 — You will be disconnected 3 times'
-      : 'Tier 2 — 1 minute timeout';
+      ? 'Tier 1 (Getting kicked out of VC 3 times 💀)'
+      : 'Tier 2 (1-minute timeout 🔇)';
 
     await channel.send(
-      `<@${executorId}> خف بضان يحبيبي\n` +
-      `⚠️ Strike **${data.strikes}/${MAX_STRIKES}** — **${remaining}** more and you'll be penalized!\n` +
+      `<@${executorId}> خف بضان يحبيبي 🤬\n` +
+      `⚠️ Strike **${data.strikes}/${MAX_STRIKES}** — **${remaining}** more and you will face the WRATH!\n` +
       `Next penalty: **${tierLabel}**\n` +
-      `Resets in **5 minutes** if you stop.`
+      `Resets in **5 minutes** if you stop doing that.\n` +
+      `https://tenor.com/view/tung-tung-tung-tung-sahur-tung-tung-sahur-tung-tung-tung-sahur-brainrot-baseball-gif-13999381090646842001`
     ).catch(err => console.error('[Penalty] Failed to send warning:', err.message));
 
     return;
@@ -276,9 +277,10 @@ async function handleBotDisconnected(guild, executorId, secondaryClient, primary
 
   if (data.tier === 1) {
     await channel.send(
-      `<@${executorId}> خف بضان يحبيبي\n` +
-      `🔴 **3/3** strikes reached! **Tier 1** penalty activated!\n` +
-      `You will be disconnected **3 times** in the next **5 minutes**. 😈`
+      `<@${executorId}> خف بضان يحبيبي 💥\n` +
+      `🔴 **3/3** strikes! **Tier 1** penalty ACTIVATED!\n` +
+      `You are going to get kicked out of the voice channel **3 times** over the next **5 minutes**! 😈\n` +
+      `https://tenor.com/view/tung-tung-tung-tung-sahur-tung-tung-sahur-tung-tung-tung-sahur-brainrot-baseball-gif-13999381090646842001`
     ).catch(err => console.error('[Penalty] Failed to send tier 1 message:', err.message));
 
     applyTier1Penalty(guild, executorId, primaryClient);
@@ -286,9 +288,10 @@ async function handleBotDisconnected(guild, executorId, secondaryClient, primary
   } else {
     // Tier 2 (max)
     await channel.send(
-      `<@${executorId}> خف بضان يحبيبي\n` +
-      `🔴 **3/3** strikes reached! **Tier 2** penalty activated!\n` +
-      `You are being **timed out for 1 minute**. 🔇`
+      `<@${executorId}> خف بضان يحبيبي 🔇\n` +
+      `🔴 **3/3** strikes! **Tier 2** penalty ACTIVATED!\n` +
+      `Enjoy your **1-minute timeout**! Talk to the hand! 🤫\n` +
+      `https://tenor.com/view/tung-tung-tung-tung-sahur-tung-tung-sahur-tung-tung-tung-sahur-brainrot-baseball-gif-13999381090646842001`
     ).catch(err => console.error('[Penalty] Failed to send tier 2 message:', err.message));
 
     await applyTier2Penalty(guild, executorId, primaryClient);
