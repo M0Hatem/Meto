@@ -4,6 +4,8 @@ const { getActiveConnections, isInVC } = require('./voiceHandler');
 // ─── Module state ──────────────────────────────────────────────
 // One stream per guild: guildId -> { streamer, channelId, startedAt }
 const activeStreams = new Map();
+// Track guilds currently undergoing stream restart to prevent race conditions
+const restartingStreams = new Set();
 
 // Hardcoded authorized user (matches /leave, /wake, /stopw pattern)
 const AUTHORIZED_USER_ID = '476908643711713280';
@@ -62,17 +64,20 @@ async function handleStreamCommand(interaction) {
 
   // If already streaming, toggle OFF
   if (activeStreams.has(guildId)) {
+    console.log(`[StreamHandler] [Guild: ${guildId}] Received request to toggle stream OFF.`);
     try {
       if (streamer) {
+        console.log(`[StreamHandler] [Guild: ${guildId}] Stopping active stream...`);
         streamer.stopStream();
       }
       activeStreams.delete(guildId);
+      console.log(`[StreamHandler] [Guild: ${guildId}] Stream stopped and removed from active tracking.`);
 
       return interaction.reply({
         content: '⏹️ Stream stopped.'
       });
     } catch (err) {
-      console.error('[StreamHandler] Failed to stop stream:', err);
+      console.error(`[StreamHandler] [Guild: ${guildId}] Failed to stop stream:`, err);
       return interaction.reply({
         content: `❌ Failed to stop stream: ${err.message}`,
         ephemeral: true
@@ -82,14 +87,14 @@ async function handleStreamCommand(interaction) {
 
   // Otherwise, toggle ON (Defer reply as Discord API calls take time)
   await interaction.deferReply();
+  console.log(`[StreamHandler] [Guild: ${guildId}] Deferring reply to establish stream for channel ${channelId}...`);
 
   try {
     const config = getStreamConfig(guildId);
 
-    // Create stream connection (Go Live / Screen-Share) asynchronously in the background.
-    // discord-video-stream's createStream resolves after establishing the WebRTC link,
-    // which can take several seconds and cause slash command reply timeouts.
-    streamer.createStream({
+    // Create stream connection (Go Live / Screen-Share) and await WebRTC connection
+    console.log(`[StreamHandler] [Guild: ${guildId}] Initializing createStream... Config:`, config);
+    await streamer.createStream({
       width: config.width || 1280,
       height: config.height || 720,
       fps: config.fps || 30,
@@ -98,9 +103,9 @@ async function handleStreamCommand(interaction) {
       videoCodec: 'H264',
       readAtNativeFps: true,
       hardwareAcceleratedDecoding: false
-    }).catch(err => {
-      console.error('[StreamHandler] Background createStream failed:', err.message);
     });
+
+    console.log(`[StreamHandler] [Guild: ${guildId}] Stream connection established successfully.`);
 
     // We do NOT call playVideo() to avoid running FFmpeg and consuming bandwidth.
     // This starts the stream indicator (Go Live) in Discord, showing the loading preview indefinitely.
@@ -114,7 +119,7 @@ async function handleStreamCommand(interaction) {
       content: `📡 Started stream visual (loading screen, zero bandwidth consumed) in <#${channelId}>.`
     });
   } catch (err) {
-    console.error('[StreamHandler] Failed to start stream:', err);
+    console.error(`[StreamHandler] [Guild: ${guildId}] Failed to start stream during command execution:`, err);
     await interaction.editReply({
       content: `❌ Failed to start stream: ${err.message}`
     });
@@ -130,13 +135,13 @@ async function handleStreamCommand(interaction) {
 function stopStreamForGuild(guildId) {
   const active = activeStreams.get(guildId);
   if (active) {
-    console.log(`[StreamHandler] Auto-stopping stream in guild ${guildId} (bot left VC).`);
+    console.log(`[StreamHandler] [Guild: ${guildId}] Auto-stopping stream (primary bot left VC).`);
     try {
       if (active.streamer) {
         active.streamer.stopStream();
       }
     } catch (err) {
-      console.error(`[StreamHandler] Error during auto-stop for guild ${guildId}:`, err.message);
+      console.error(`[StreamHandler] [Guild: ${guildId}] Error during auto-stop stream:`, err.message);
     }
     activeStreams.delete(guildId);
   }
@@ -146,27 +151,39 @@ function stopStreamForGuild(guildId) {
  * Destroy all active stream clients (called on process shutdown).
  */
 function cleanupAllStreams() {
+  console.log('[StreamHandler] Cleaning up all active streams...');
   for (const [guildId, active] of activeStreams.entries()) {
     try {
       if (active.streamer) {
+        console.log(`[StreamHandler] [Guild: ${guildId}] Stopping stream client...`);
         active.streamer.stopStream();
       }
     } catch (err) {
-      console.error(`[StreamHandler] Error stopping stream for guild ${guildId}:`, err.message);
+      console.error(`[StreamHandler] [Guild: ${guildId}] Error stopping stream during cleanup:`, err.message);
     }
   }
   activeStreams.clear();
+  restartingStreams.clear();
 }
 
 async function restartStreamIfActive(guildId) {
   const active = activeStreams.get(guildId);
   if (active && active.streamer) {
-    console.log(`[StreamHandler] Re-establishing stream in guild ${guildId} after voice rejoin...`);
+    if (restartingStreams.has(guildId)) {
+      console.log(`[StreamHandler] [Guild: ${guildId}] Stream restart already in progress. Skipping duplicate restart request.`);
+      return;
+    }
+    restartingStreams.add(guildId);
+    console.log(`[StreamHandler] [Guild: ${guildId}] Re-establishing stream after voice rejoin...`);
     try {
       // Stop any stale stream connection state
-      try { active.streamer.stopStream(); } catch (_) {}
+      try {
+        console.log(`[StreamHandler] [Guild: ${guildId}] Stopping stale stream connection...`);
+        active.streamer.stopStream();
+      } catch (_) {}
 
       const config = getStreamConfig(guildId);
+      console.log(`[StreamHandler] [Guild: ${guildId}] Initializing stream re-creation...`);
       await active.streamer.createStream({
         width: config.width || 1280,
         height: config.height || 720,
@@ -177,9 +194,11 @@ async function restartStreamIfActive(guildId) {
         readAtNativeFps: true,
         hardwareAcceleratedDecoding: false
       });
-      console.log(`[StreamHandler] Stream re-established successfully in guild ${guildId}.`);
+      console.log(`[StreamHandler] [Guild: ${guildId}] Stream re-established successfully.`);
     } catch (err) {
-      console.error(`[StreamHandler] Failed to re-establish stream in guild ${guildId}:`, err.message);
+      console.error(`[StreamHandler] [Guild: ${guildId}] Failed to re-establish stream:`, err.message);
+    } finally {
+      restartingStreams.delete(guildId);
     }
   }
 }

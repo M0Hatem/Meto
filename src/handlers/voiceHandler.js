@@ -62,14 +62,15 @@ async function setupVoiceConnection(botClient, guild, channel, type = 'primary')
         authorizedDisconnect: false
       };
 
-      console.log(`[Voice - secondary] Joined VC ${channel.id} in guild ${guild.id} via Streamer.`);
+      console.log(`[Voice - secondary] [Guild: ${guild.id}] Joined VC ${channel.id} via Streamer.`);
       
       // Auto-restart stream if it was active before the disconnect/move
       try {
         const { restartStreamIfActive } = require('./streamHandler');
-        restartStreamIfActive(guild.id);
+        console.log(`[Voice - secondary] [Guild: ${guild.id}] Triggering stream check/restart...`);
+        await restartStreamIfActive(guild.id);
       } catch (err) {
-        console.error('[Voice - secondary] Failed to check/restart active stream:', err.message);
+        console.error(`[Voice - secondary] [Guild: ${guild.id}] Failed to check/restart active stream:`, err.message);
       }
 
       return;
@@ -101,10 +102,15 @@ async function setupVoiceConnection(botClient, guild, channel, type = 'primary')
 
     // Set up connection event handlers only once
     if (!existing) {
+      connection.on('stateChange', (oldState, newState) => {
+        console.log(`[Voice - ${type}] [Guild: ${guild.id}] Connection state changed from ${oldState.status} to ${newState.status}.`);
+      });
+
       connection.on(VoiceConnectionStatus.Disconnected, async () => {
         const currentGuildConns = voiceConnections.get(guild.id);
         const state = currentGuildConns ? currentGuildConns[type] : null;
         if (state && !state.authorizedDisconnect) {
+          console.log(`[Voice - ${type}] [Guild: ${guild.id}] Unscheduled disconnection detected. Checking channel existence...`);
           // Check if channel was deleted
           let channelExists = guild.channels.cache.has(channel.id);
           if (!channelExists) {
@@ -116,25 +122,27 @@ async function setupVoiceConnection(botClient, guild, channel, type = 'primary')
             }
           }
           if (!channelExists) {
-            console.log(`[Voice - ${type}] Target VC ${channel.id} does not exist anymore. Skipping Disconnected event rejoin.`);
+            console.log(`[Voice - ${type}] [Guild: ${guild.id}] Target VC ${channel.id} does not exist anymore. Skipping Disconnected event rejoin.`);
             return;
           }
 
-          console.log(`[Voice - ${type}] Disconnected from voice in guild ${guild.id}. Reconnecting...`);
+          console.log(`[Voice - ${type}] [Guild: ${guild.id}] Channel still exists. Reconnecting voice connection...`);
           try {
             await setupVoiceConnection(botClient, guild, channel, type);
           } catch (err) {
-            console.error(`[Voice - ${type}] Failed to reconnect voice connection:`, err);
+            console.error(`[Voice - ${type}] [Guild: ${guild.id}] Failed to reconnect voice connection:`, err);
           }
+        } else {
+          console.log(`[Voice - ${type}] [Guild: ${guild.id}] Connection disconnected (authorized or no active state tracked).`);
         }
       });
 
       connection.on('error', (error) => {
-        console.error(`[Voice - ${type}] Voice connection error in guild ${guild.id}:`, error);
+        console.error(`[Voice - ${type}] [Guild: ${guild.id}] Voice connection error:`, error);
       });
     }
   } catch (err) {
-    console.error(`[Voice - ${type}] Error joining channel ${channel.id}:`, err);
+    console.error(`[Voice - ${type}] [Guild: ${guild.id}] Error joining channel ${channel.id}:`, err);
   }
 }
 
