@@ -139,14 +139,14 @@ async function handleBotDisconnected(guild, executorId, secondaryClient, primary
     const remaining = MAX_STRIKES - data.strikes;
     const nextTier = Math.min(data.tier + 1, 2);
     const tierLabel = nextTier === 1
-      ? 'Tier 1 — هتتشال من الروم 3 مرات (disconnect penalty)'
-      : 'Tier 2 — timeout دقيقة (timeout penalty)';
+      ? 'Tier 1 — You will be disconnected 3 times'
+      : 'Tier 2 — 1 minute timeout';
 
     await channel.send(
       `<@${executorId}> خف بضان يحبيبي\n` +
-      `⚠️ **${data.strikes}/${MAX_STRIKES}** — كمان **${remaining}** مرة وهتتعاقب!\n` +
-      `Tier الجاي: **${tierLabel}**\n` +
-      `بيرجع صفر بعد **5 دقايق** لو وقفت.`
+      `⚠️ Strike **${data.strikes}/${MAX_STRIKES}** — **${remaining}** more and you'll be penalized!\n` +
+      `Next penalty: **${tierLabel}**\n` +
+      `Resets in **5 minutes** if you stop.`
     ).catch(err => console.error('[Penalty] Failed to send warning:', err.message));
 
     return;
@@ -159,8 +159,8 @@ async function handleBotDisconnected(guild, executorId, secondaryClient, primary
   if (data.tier === 1) {
     await channel.send(
       `<@${executorId}> خف بضان يحبيبي\n` +
-      `🔴 **3/3** وصلت! **Tier 1** penalty اتفعلت!\n` +
-      `هتتشال من الروم **3 مرات** في الـ **5 دقايق** الجاية. 😈`
+      `🔴 **3/3** strikes reached! **Tier 1** penalty activated!\n` +
+      `You will be disconnected **3 times** in the next **5 minutes**. 😈`
     ).catch(err => console.error('[Penalty] Failed to send tier 1 message:', err.message));
 
     applyTier1Penalty(guild, executorId, primaryClient);
@@ -169,8 +169,8 @@ async function handleBotDisconnected(guild, executorId, secondaryClient, primary
     // Tier 2 (max)
     await channel.send(
       `<@${executorId}> خف بضان يحبيبي\n` +
-      `🔴 **3/3** وصلت! **Tier 2** penalty اتفعلت!\n` +
-      `**timeout دقيقة** عليك. 🔇`
+      `🔴 **3/3** strikes reached! **Tier 2** penalty activated!\n` +
+      `You are being **timed out for 1 minute**. 🔇`
     ).catch(err => console.error('[Penalty] Failed to send tier 2 message:', err.message));
 
     await applyTier2Penalty(guild, executorId, primaryClient);
