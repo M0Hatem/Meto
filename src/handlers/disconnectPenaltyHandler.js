@@ -60,21 +60,13 @@ async function initializeAuditLogTracking(primaryClient, secondaryClient) {
       if (disconnectLogs) {
         console.log(`[Penalty] Guild ${guild.id} fetched ${disconnectLogs.entries.size} disconnect entries`);
         for (const entry of disconnectLogs.entries.values()) {
-          const targetId = entry.targetId || entry.target?.id;
-          console.log(`[Penalty] Disconnect entry ID ${entry.id}, targetId ${targetId}`);
-          if (targetId === secondaryUserId) {
-            guildMap.set(entry.id, entry.extra?.count || 1);
-          }
+          guildMap.set(entry.id, entry.extra?.count || 1);
         }
       }
       if (moveLogs) {
         console.log(`[Penalty] Guild ${guild.id} fetched ${moveLogs.entries.size} move entries`);
         for (const entry of moveLogs.entries.values()) {
-          const targetId = entry.targetId || entry.target?.id;
-          console.log(`[Penalty] Move entry ID ${entry.id}, targetId ${targetId}`);
-          if (targetId === secondaryUserId) {
-            guildMap.set(entry.id, entry.extra?.count || 1);
-          }
+          guildMap.set(entry.id, entry.extra?.count || 1);
         }
       }
 
@@ -137,18 +129,17 @@ async function findDisconnector(guild, primaryClient, secondaryClient) {
   if (disconnectLogs) entries.push(...disconnectLogs.entries.values());
   if (moveLogs) entries.push(...moveLogs.entries.values());
 
-  // Filter entries targeting our secondary bot, and not executed by our bots
+  // Filter entries not executed by our own bots
   const relevantEntries = entries
     .filter(entry => {
-      const targetId = entry.targetId || entry.target?.id;
-      const match = targetId === secondaryUserId && !isSelf(entry.executor?.id);
-      console.log(`[Penalty] Entry ID ${entry.id}, Action: ${entry.action}, Target: ${targetId}, Executor: ${entry.executor?.id}, isSelf: ${isSelf(entry.executor?.id)}, Matches Target & Not Self: ${match}`);
+      const match = !isSelf(entry.executor?.id);
+      console.log(`[Penalty] Entry ID ${entry.id}, Action: ${entry.action}, Executor: ${entry.executor?.id}, isSelf: ${isSelf(entry.executor?.id)}, Matches: ${match}`);
       return match;
     })
     .sort((a, b) => b.createdTimestamp - a.createdTimestamp);
 
   if (relevantEntries.length === 0) {
-    console.log(`[Penalty] [Guild: ${guild.id}] No relevant audit log entries found targeting the bot.`);
+    console.log(`[Penalty] [Guild: ${guild.id}] No relevant audit log entries found.`);
     return null;
   }
 
