@@ -1,0 +1,256 @@
+const { AuditLogEvent } = require('discord.js');
+
+// ─── Constants ─────────────────────────────────────────────────
+const PENALTY_CHANNEL_ID = '1222752342227816591';
+const AUTHORIZED_USER_ID = '476908643711713280';
+const MAX_STRIKES = 3;
+const RESET_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
+
+// ─── State ─────────────────────────────────────────────────────
+// userId -> { strikes: number, tier: number, resetTimer: NodeJS.Timeout|null }
+const penaltyData = new Map();
+
+// Active tier-1 penalties: userId -> intervalId
+const activeTier1Penalties = new Map();
+
+function getOrCreateData(userId) {
+  if (!penaltyData.has(userId)) {
+    penaltyData.set(userId, { strikes: 0, tier: 0, resetTimer: null });
+  }
+  return penaltyData.get(userId);
+}
+
+// ─── Audit log lookup ──────────────────────────────────────────
+
+/**
+ * Look up who disconnected or moved the bot using the guild audit log.
+ * Checks both MEMBER_DISCONNECT and MEMBER_MOVE entries from the last 15 seconds.
+ * @param {import('discord.js').Guild} guild
+ * @param {import('discord.js').Client} primaryClient  - The main bot (has VIEW_AUDIT_LOG)
+ * @param {object|null} secondaryClient - The selfbot streamer client
+ * @returns {Promise<string|null>} executor user ID, or null
+ */
+async function findDisconnector(guild, primaryClient, secondaryClient) {
+  // Use the primary client's guild instance to ensure proper permissions
+  let targetGuild;
+  try {
+    targetGuild = primaryClient.guilds.cache.get(guild.id) || await primaryClient.guilds.fetch(guild.id);
+  } catch {
+    targetGuild = guild;
+  }
+
+  const now = Date.now();
+  const lookbackMs = 15_000; // 15 seconds
+
+  // Helper: skip entries from our own bots
+  const isSelf = (id) =>
+    id === primaryClient.user.id ||
+    (secondaryClient && id === secondaryClient.user?.id);
+
+  // Check MEMBER_DISCONNECT audit log
+  try {
+    const logs = await targetGuild.fetchAuditLogs({
+      type: AuditLogEvent.MemberDisconnect,
+      limit: 5
+    });
+    for (const entry of logs.entries.values()) {
+      if (now - entry.createdTimestamp < lookbackMs && !isSelf(entry.executor.id)) {
+        return entry.executor.id;
+      }
+    }
+  } catch (err) {
+    console.error('[Penalty] Failed to fetch MEMBER_DISCONNECT audit log:', err.message);
+  }
+
+  // Check MEMBER_MOVE audit log
+  try {
+    const logs = await targetGuild.fetchAuditLogs({
+      type: AuditLogEvent.MemberMove,
+      limit: 5
+    });
+    for (const entry of logs.entries.values()) {
+      if (now - entry.createdTimestamp < lookbackMs && !isSelf(entry.executor.id)) {
+        return entry.executor.id;
+      }
+    }
+  } catch (err) {
+    console.error('[Penalty] Failed to fetch MEMBER_MOVE audit log:', err.message);
+  }
+
+  return null;
+}
+
+// ─── Main handler ──────────────────────────────────────────────
+
+/**
+ * Called when the secondary (streaming) bot is disconnected or moved by a user.
+ * Tracks strikes, sends warning messages, and applies penalties.
+ *
+ * @param {import('discord.js').Guild} guild
+ * @param {string} executorId - The user who disconnected/moved the bot
+ * @param {object} secondaryClient - Selfbot client (sends messages)
+ * @param {import('discord.js').Client} primaryClient - Main bot (applies penalties)
+ */
+async function handleBotDisconnected(guild, executorId, secondaryClient, primaryClient) {
+  if (!executorId) return;
+  if (executorId === AUTHORIZED_USER_ID) return;
+  if (secondaryClient && executorId === secondaryClient.user?.id) return;
+  if (executorId === primaryClient.user.id) return;
+
+  console.log(`[Penalty] User ${executorId} disconnected/moved the streaming bot in guild ${guild.id}`);
+
+  const data = getOrCreateData(executorId);
+
+  // Clear existing reset timer
+  if (data.resetTimer) {
+    clearTimeout(data.resetTimer);
+    data.resetTimer = null;
+  }
+
+  data.strikes++;
+
+  // Set 5-min reset timer (resets both strikes AND tier)
+  data.resetTimer = setTimeout(() => {
+    console.log(`[Penalty] Resetting strikes & tier for user ${executorId} (5 min without disconnect).`);
+    data.strikes = 0;
+    data.tier = 0;
+  }, RESET_WINDOW_MS);
+
+  // ── Get the penalty channel (secondary bot sends messages) ──
+  let channel;
+  try {
+    channel =
+      secondaryClient.channels.cache.get(PENALTY_CHANNEL_ID) ||
+      (await secondaryClient.channels.fetch(PENALTY_CHANNEL_ID));
+  } catch {
+    // Fallback to primary client
+    try {
+      channel =
+        primaryClient.channels.cache.get(PENALTY_CHANNEL_ID) ||
+        (await primaryClient.channels.fetch(PENALTY_CHANNEL_ID));
+    } catch (err2) {
+      console.error(`[Penalty] Could not access penalty channel ${PENALTY_CHANNEL_ID}:`, err2.message);
+      return;
+    }
+  }
+
+  // ── Strikes < 3 → warning message ──
+  if (data.strikes < MAX_STRIKES) {
+    const remaining = MAX_STRIKES - data.strikes;
+    const nextTier = Math.min(data.tier + 1, 2);
+    const tierLabel = nextTier === 1
+      ? 'Tier 1 — هتتشال من الروم 3 مرات (disconnect penalty)'
+      : 'Tier 2 — timeout دقيقة (timeout penalty)';
+
+    await channel.send(
+      `<@${executorId}> خف بضان يحبيبي\n` +
+      `⚠️ **${data.strikes}/${MAX_STRIKES}** — كمان **${remaining}** مرة وهتتعاقب!\n` +
+      `Tier الجاي: **${tierLabel}**\n` +
+      `بيرجع صفر بعد **5 دقايق** لو وقفت.`
+    ).catch(err => console.error('[Penalty] Failed to send warning:', err.message));
+
+    return;
+  }
+
+  // ── 3/3 reached → apply penalty ──
+  data.strikes = 0; // reset counter for next cycle
+  data.tier = Math.min(data.tier + 1, 2);
+
+  if (data.tier === 1) {
+    await channel.send(
+      `<@${executorId}> خف بضان يحبيبي\n` +
+      `🔴 **3/3** وصلت! **Tier 1** penalty اتفعلت!\n` +
+      `هتتشال من الروم **3 مرات** في الـ **5 دقايق** الجاية. 😈`
+    ).catch(err => console.error('[Penalty] Failed to send tier 1 message:', err.message));
+
+    applyTier1Penalty(guild, executorId, primaryClient);
+
+  } else {
+    // Tier 2 (max)
+    await channel.send(
+      `<@${executorId}> خف بضان يحبيبي\n` +
+      `🔴 **3/3** وصلت! **Tier 2** penalty اتفعلت!\n` +
+      `**timeout دقيقة** عليك. 🔇`
+    ).catch(err => console.error('[Penalty] Failed to send tier 2 message:', err.message));
+
+    await applyTier2Penalty(guild, executorId, primaryClient);
+  }
+}
+
+// ─── Penalties ─────────────────────────────────────────────────
+
+/**
+ * Tier 1: disconnect the offending user 3 times, spread across ~5 minutes.
+ */
+function applyTier1Penalty(guild, userId, primaryClient) {
+  // Cancel any existing tier-1 penalty on this user
+  if (activeTier1Penalties.has(userId)) {
+    clearInterval(activeTier1Penalties.get(userId));
+  }
+
+  let remaining = 3;
+  const intervalMs = Math.floor(RESET_WINDOW_MS / 3); // ~100 s apart
+
+  const id = setInterval(async () => {
+    try {
+      const g = primaryClient.guilds.cache.get(guild.id);
+      if (!g) { clearInterval(id); activeTier1Penalties.delete(userId); return; }
+
+      const member = await g.members.fetch(userId).catch(() => null);
+      if (member && member.voice.channel) {
+        await member.voice.disconnect('Penalty: Tier 1 — disconnected for repeatedly disconnecting the bot');
+        remaining--;
+        console.log(`[Penalty] Tier 1: Disconnected ${userId}. ${remaining} left.`);
+      } else {
+        console.log(`[Penalty] Tier 1: ${userId} not in voice. Skipping this round.`);
+      }
+    } catch (err) {
+      console.error(`[Penalty] Tier 1 disconnect failed for ${userId}:`, err.message);
+    }
+
+    if (remaining <= 0) {
+      console.log(`[Penalty] Tier 1 penalty complete for ${userId}.`);
+      clearInterval(id);
+      activeTier1Penalties.delete(userId);
+    }
+  }, intervalMs);
+
+  activeTier1Penalties.set(userId, id);
+  console.log(`[Penalty] Tier 1: Scheduled 3 disconnects for ${userId} every ~${Math.round(intervalMs / 1000)}s.`);
+}
+
+/**
+ * Tier 2: timeout the offending user for 1 minute.
+ */
+async function applyTier2Penalty(guild, userId, primaryClient) {
+  try {
+    const g = primaryClient.guilds.cache.get(guild.id);
+    if (!g) return;
+    const member = await g.members.fetch(userId).catch(() => null);
+    if (member) {
+      await member.timeout(60_000, 'Penalty: Tier 2 — timed out for repeatedly disconnecting the bot');
+      console.log(`[Penalty] Tier 2: Timed out ${userId} for 1 minute.`);
+    }
+  } catch (err) {
+    console.error(`[Penalty] Tier 2 timeout failed for ${userId}:`, err.message);
+  }
+}
+
+// ─── Cleanup ───────────────────────────────────────────────────
+function cleanupPenalties() {
+  for (const [userId, data] of penaltyData.entries()) {
+    if (data.resetTimer) clearTimeout(data.resetTimer);
+  }
+  penaltyData.clear();
+  for (const [userId, id] of activeTier1Penalties.entries()) {
+    clearInterval(id);
+  }
+  activeTier1Penalties.clear();
+}
+
+module.exports = {
+  findDisconnector,
+  handleBotDisconnected,
+  cleanupPenalties,
+  penaltyData
+};

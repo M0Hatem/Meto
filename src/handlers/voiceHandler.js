@@ -2,6 +2,10 @@ const { joinVoiceChannel, VoiceConnectionStatus } = require('@discordjs/voice');
 
 let secondaryStreamer = null;
 
+// Stored client references (set in initVoiceHandlers) — needed for penalty audit-log lookups
+let _primaryClient = null;
+let _secondaryClient = null;
+
 async function getSecondaryStreamer(clientSecondary) {
   if (!secondaryStreamer && clientSecondary) {
     const pkg = await import('@dank074/discord-video-stream');
@@ -66,12 +70,48 @@ async function setupVoiceConnection(botClient, guild, channel, type = 'primary')
       
       // Auto-restart stream if it was active before the disconnect/move
       try {
-        const { restartStreamIfActive } = require('./streamHandler');
+        const { restartStreamIfActive, activeStreams } = require('./streamHandler');
         console.log(`[Voice - secondary] [Guild: ${guild.id}] Triggering stream check/restart...`);
         await restartStreamIfActive(guild.id);
       } catch (err) {
         console.error(`[Voice - secondary] [Guild: ${guild.id}] Failed to check/restart active stream:`, err.message);
       }
+
+      // Post-rejoin verification: 10 seconds after rejoin, verify the stream is truly alive.
+      // If it's not, force-restart it. This catches silent failures from the initial restart.
+      const guildIdCapture = guild.id;
+      setTimeout(async () => {
+        try {
+          const { restartStreamIfActive, activeStreams } = require('./streamHandler');
+          if (!activeStreams.has(guildIdCapture)) return; // Stream was intentionally stopped, nothing to verify
+
+          const currentConns = voiceConnections.get(guildIdCapture);
+          if (!currentConns || !currentConns.secondary || !currentConns.secondary.connection) {
+            console.log(`[StreamVerify] [Guild: ${guildIdCapture}] Post-rejoin check: secondary connection gone. Skipping.`);
+            return;
+          }
+
+          const str = currentConns.secondary.connection;
+          let streamOk = false;
+
+          if (str.voiceConnection && str.voiceConnection.streamConnection) {
+            const sc = str.voiceConnection.streamConnection;
+            const wsOpen = sc.ws?.readyState === undefined || sc.ws?.readyState === 1;
+            const hasUdp = !!sc.udp;
+            const isReady = sc.ready !== false;
+            streamOk = wsOpen && hasUdp && isReady;
+          }
+
+          if (streamOk) {
+            console.log(`[StreamVerify] [Guild: ${guildIdCapture}] Post-rejoin check passed — stream is alive. ✅`);
+          } else {
+            console.log(`[StreamVerify] [Guild: ${guildIdCapture}] Post-rejoin check FAILED — stream is not properly established. Force-restarting...`);
+            await restartStreamIfActive(guildIdCapture);
+          }
+        } catch (verifyErr) {
+          console.error(`[StreamVerify] [Guild: ${guildIdCapture}] Error during post-rejoin verification:`, verifyErr.message);
+        }
+      }, 10_000);
 
       return;
     }
@@ -155,6 +195,25 @@ async function handleVoiceStateUpdate(botClient, type, oldState, newState) {
     
     // If the bot has active connection and shouldn't be disconnected
     if (state && !state.authorizedDisconnect) {
+      // ── Penalty tracking: detect when someone disrupts the streaming bot ──
+      if (type === 'secondary' && _primaryClient && (newState.channelId === null || newState.channelId !== state.channelId)) {
+        // Fire-and-forget: wait 2 s for the audit log to populate, then check who did it
+        const capturedGuild = newState.guild;
+        setTimeout(async () => {
+          try {
+            const { findDisconnector, handleBotDisconnected } = require('./disconnectPenaltyHandler');
+            const executorId = await findDisconnector(capturedGuild, _primaryClient, _secondaryClient);
+            if (executorId) {
+              await handleBotDisconnected(capturedGuild, executorId, _secondaryClient || botClient, _primaryClient);
+            } else {
+              console.log(`[Penalty] [Guild: ${guildId}] Bot was disconnected/moved but could not identify who did it (no recent audit log entry).`);
+            }
+          } catch (err) {
+            console.error(`[Penalty] [Guild: ${guildId}] Error during penalty check:`, err.message);
+          }
+        }, 2000);
+      }
+
       if (newState.channelId === null) {
         // Check if the channel still exists in the guild.
         // If the channel was deleted, skip standard voiceStateUpdate rejoining.
@@ -193,6 +252,10 @@ async function handleVoiceStateUpdate(botClient, type, oldState, newState) {
 
 // Initialize listeners on bot clients
 function initVoiceHandlers(client, clientSecondary) {
+  // Store references for audit-log / penalty lookups
+  _primaryClient = client;
+  _secondaryClient = clientSecondary;
+
   client.on('voiceStateUpdate', (oldState, newState) => {
     handleVoiceStateUpdate(client, 'primary', oldState, newState);
   });

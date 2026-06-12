@@ -49,6 +49,7 @@ const { cleanupWakeLoops } = require('./handlers/wakeHandler');
 const { handleMessageCreate } = require('./handlers/messageHandler');
 const { handleInteractionCreate } = require('./handlers/interactionHandler');
 const { cleanupAllStreams, stopStreamForGuild } = require('./handlers/streamHandler');
+const { cleanupPenalties } = require('./handlers/disconnectPenaltyHandler');
 
 // Validate secondary client (self-bot user token) for VC/streaming
 const tokenSecondary = process.env.DISCORD_TOKEN_SECONDARY;
@@ -426,6 +427,10 @@ const shutdown = (signal) => {
       // Stop wake loops
       cleanupWakeLoops();
       console.log('[Shutdown] All active wake loops stopped.');
+
+      // Clear penalty timers
+      cleanupPenalties();
+      console.log('[Shutdown] All penalty trackers cleared.');
 
       // Stop all active streams
       cleanupAllStreams();
