@@ -13,6 +13,9 @@ const penaltyData = new Map();
 // Active tier-1 penalties: userId -> intervalId
 const activeTier1Penalties = new Map();
 
+// Per-guild debounce: guildId -> timestamp of last processed penalty (prevents double-counting)
+const lastPenaltyTime = new Map();
+
 function getOrCreateData(userId) {
   if (!penaltyData.has(userId)) {
     penaltyData.set(userId, { strikes: 0, tier: 0, resetTimer: null });
@@ -98,6 +101,16 @@ async function handleBotDisconnected(guild, executorId, secondaryClient, primary
   if (executorId === primaryClient.user.id) return;
 
   console.log(`[Penalty] User ${executorId} disconnected/moved the streaming bot in guild ${guild.id}`);
+
+  // Debounce: skip if we already processed a penalty for this guild within 4 seconds
+  // (prevents double-counting when both voiceStateUpdate AND post-rejoin check fire)
+  const now = Date.now();
+  const lastTime = lastPenaltyTime.get(guild.id) || 0;
+  if (now - lastTime < 4000) {
+    console.log(`[Penalty] [Guild: ${guild.id}] Skipping — penalty already processed ${now - lastTime}ms ago.`);
+    return;
+  }
+  lastPenaltyTime.set(guild.id, now);
 
   const data = getOrCreateData(executorId);
 
@@ -252,5 +265,6 @@ module.exports = {
   findDisconnector,
   handleBotDisconnected,
   cleanupPenalties,
-  penaltyData
+  penaltyData,
+  lastPenaltyTime
 };

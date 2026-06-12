@@ -113,6 +113,53 @@ async function setupVoiceConnection(botClient, guild, channel, type = 'primary')
         }
       }, 10_000);
 
+      // Post-rejoin penalty safety net (5s): catch rapid re-disconnects whose voiceStateUpdate may be missed
+      setTimeout(async () => {
+        try {
+          if (!_primaryClient || !_secondaryClient) return;
+          const { activeStreams } = require('./streamHandler');
+          if (!activeStreams.has(guildIdCapture)) return; // Stream not active, nothing to guard
+
+          // Use the primary client (proper bot) to check the secondary bot's actual voice state
+          const g = _primaryClient.guilds.cache.get(guildIdCapture);
+          if (!g) return;
+          const secondaryUserId = _secondaryClient.user?.id;
+          if (!secondaryUserId) return;
+
+          const member = await g.members.fetch(secondaryUserId).catch(() => null);
+          if (member && !member.voice.channelId) {
+            // Bot is NOT in voice 5s after rejoin — someone disconnected it again
+            console.log(`[PenaltyVerify] [Guild: ${guildIdCapture}] Secondary bot not in voice 5s after rejoin. Checking for missed disconnect...`);
+
+            const { findDisconnector, handleBotDisconnected, lastPenaltyTime } = require('./disconnectPenaltyHandler');
+
+            // Only process if the voiceStateUpdate handler didn't already catch it (debounce check)
+            const lastPenalty = lastPenaltyTime.get(guildIdCapture) || 0;
+            if (Date.now() - lastPenalty < 4000) {
+              console.log(`[PenaltyVerify] [Guild: ${guildIdCapture}] Penalty already processed recently. Skipping duplicate.`);
+            } else {
+              const executorId = await findDisconnector(g, _primaryClient, _secondaryClient);
+              if (executorId) {
+                console.log(`[PenaltyVerify] [Guild: ${guildIdCapture}] Found missed disconnect by ${executorId}. Applying penalty...`);
+                await handleBotDisconnected(g, executorId, _secondaryClient, _primaryClient);
+              }
+            }
+
+            // Trigger re-rejoin regardless (bot should be in voice)
+            const currentConns = voiceConnections.get(guildIdCapture);
+            if (currentConns?.secondary?.channelId) {
+              const targetCh = g.channels.cache.get(currentConns.secondary.channelId);
+              if (targetCh) {
+                console.log(`[PenaltyVerify] [Guild: ${guildIdCapture}] Triggering re-rejoin to ${currentConns.secondary.channelId}...`);
+                await setupVoiceConnection(_secondaryClient, g, targetCh, 'secondary');
+              }
+            }
+          }
+        } catch (err) {
+          console.error(`[PenaltyVerify] [Guild: ${guildIdCapture}] Error:`, err.message);
+        }
+      }, 5000);
+
       return;
     }
 
