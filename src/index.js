@@ -135,6 +135,7 @@ client.once('ready', async () => {
   await registerSlashCommands(client.user.id, token);
 
   // Initialize audit log tracking if secondary client is already ready
+  primaryReady = true;
   tryInitAuditLogs();
 });
 
@@ -146,9 +147,12 @@ client.on('messageCreate', async (message) => {
 // Initialize and login Secondary and Tertiary Bots if configured
 let clientSecondary = null;
 let clientTertiary = null;
+let primaryReady = false;
+let secondaryReady = false;
 
 function tryInitAuditLogs() {
-  if (client.readyAt && clientSecondary && clientSecondary.readyAt) {
+  console.log(`[tryInitAuditLogs] Checking ready status: primaryReady=${primaryReady}, clientSecondary=${!!clientSecondary}, secondaryReady=${secondaryReady}`);
+  if (primaryReady && clientSecondary && secondaryReady) {
     initializeAuditLogTracking(client, clientSecondary);
   }
 }
@@ -181,6 +185,7 @@ function tryInitAuditLogs() {
       console.log(`=========================================`);
 
       // Initialize audit log tracking if primary client is already ready
+      secondaryReady = true;
       tryInitAuditLogs();
 
       // Set Twitch streaming status

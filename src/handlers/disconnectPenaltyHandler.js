@@ -29,48 +29,57 @@ function getOrCreateData(userId) {
 
 // ─── Audit log lookup ──────────────────────────────────────────
 
-/**
- * Pre-populate tracking with existing audit log entries so that network disconnects
- * are not misattributed, and the first user action is correctly captured.
- * @param {import('discord.js').Client} primaryClient
- * @param {object} secondaryClient
- */
 async function initializeAuditLogTracking(primaryClient, secondaryClient) {
+  console.log(`[Penalty] initializeAuditLogTracking started. primaryClient: ${!!primaryClient}, secondaryClient: ${!!secondaryClient}`);
   if (!primaryClient || !secondaryClient) return;
   const secondaryUserId = secondaryClient.user?.id;
+  console.log(`[Penalty] initializeAuditLogTracking secondaryUserId: ${secondaryUserId}`);
   if (!secondaryUserId) return;
 
   for (const guild of primaryClient.guilds.cache.values()) {
+    console.log(`[Penalty] Initializing tracking for guild ${guild.name} (${guild.id})`);
     try {
       const disconnectLogs = await guild.fetchAuditLogs({
         type: AuditLogEvent.MemberDisconnect,
         limit: 10
-      }).catch(() => null);
+      }).catch((err) => {
+        console.error(`[Penalty] initializeAuditLogTracking fetch MEMBER_DISCONNECT error for ${guild.id}:`, err.message);
+        return null;
+      });
 
       const moveLogs = await guild.fetchAuditLogs({
         type: AuditLogEvent.MemberMove,
         limit: 10
-      }).catch(() => null);
+      }).catch((err) => {
+        console.error(`[Penalty] initializeAuditLogTracking fetch MEMBER_MOVE error for ${guild.id}:`, err.message);
+        return null;
+      });
 
       const guildMap = new Map();
 
       if (disconnectLogs) {
+        console.log(`[Penalty] Guild ${guild.id} fetched ${disconnectLogs.entries.size} disconnect entries`);
         for (const entry of disconnectLogs.entries.values()) {
-          if (entry.targetId === secondaryUserId) {
+          const targetId = entry.targetId || entry.target?.id;
+          console.log(`[Penalty] Disconnect entry ID ${entry.id}, targetId ${targetId}`);
+          if (targetId === secondaryUserId) {
             guildMap.set(entry.id, entry.extra?.count || 1);
           }
         }
       }
       if (moveLogs) {
+        console.log(`[Penalty] Guild ${guild.id} fetched ${moveLogs.entries.size} move entries`);
         for (const entry of moveLogs.entries.values()) {
-          if (entry.targetId === secondaryUserId) {
+          const targetId = entry.targetId || entry.target?.id;
+          console.log(`[Penalty] Move entry ID ${entry.id}, targetId ${targetId}`);
+          if (targetId === secondaryUserId) {
             guildMap.set(entry.id, entry.extra?.count || 1);
           }
         }
       }
 
       processedAuditLogEntries.set(guild.id, guildMap);
-      console.log(`[Penalty] Initialized audit log tracking for guild ${guild.id}. Cached ${guildMap.size} entries.`);
+      console.log(`[Penalty] Initialized audit log tracking for guild ${guild.name} (${guild.id}). Cached ${guildMap.size} entries.`);
     } catch (err) {
       console.error(`[Penalty] Failed to initialize audit log tracking for guild ${guild.id}:`, err.message);
     }
@@ -95,6 +104,7 @@ async function findDisconnector(guild, primaryClient, secondaryClient) {
   }
 
   const secondaryUserId = secondaryClient?.user?.id;
+  console.log(`[Penalty] findDisconnector called for guild ${guild.name} (${guild.id}). secondaryUserId: ${secondaryUserId}`);
   if (!secondaryUserId) return null;
 
   // Helper: skip entries from our own bots
@@ -107,6 +117,7 @@ async function findDisconnector(guild, primaryClient, secondaryClient) {
       type: AuditLogEvent.MemberDisconnect,
       limit: 10
     });
+    console.log(`[Penalty] findDisconnector: Fetched ${disconnectLogs?.entries.size || 0} MEMBER_DISCONNECT logs`);
   } catch (err) {
     console.error('[Penalty] Failed to fetch MEMBER_DISCONNECT audit log:', err.message);
   }
@@ -117,6 +128,7 @@ async function findDisconnector(guild, primaryClient, secondaryClient) {
       type: AuditLogEvent.MemberMove,
       limit: 10
     });
+    console.log(`[Penalty] findDisconnector: Fetched ${moveLogs?.entries.size || 0} MEMBER_MOVE logs`);
   } catch (err) {
     console.error('[Penalty] Failed to fetch MEMBER_MOVE audit log:', err.message);
   }
@@ -127,7 +139,12 @@ async function findDisconnector(guild, primaryClient, secondaryClient) {
 
   // Filter entries targeting our secondary bot, and not executed by our bots
   const relevantEntries = entries
-    .filter(entry => entry.targetId === secondaryUserId && !isSelf(entry.executor.id))
+    .filter(entry => {
+      const targetId = entry.targetId || entry.target?.id;
+      const match = targetId === secondaryUserId && !isSelf(entry.executor?.id);
+      console.log(`[Penalty] Entry ID ${entry.id}, Action: ${entry.action}, Target: ${targetId}, Executor: ${entry.executor?.id}, isSelf: ${isSelf(entry.executor?.id)}, Matches Target & Not Self: ${match}`);
+      return match;
+    })
     .sort((a, b) => b.createdTimestamp - a.createdTimestamp);
 
   if (relevantEntries.length === 0) {
@@ -146,6 +163,7 @@ async function findDisconnector(guild, primaryClient, secondaryClient) {
     const entryId = entry.id;
     const currentCount = entry.extra?.count || 1;
     const prevCount = guildMap.get(entryId);
+    console.log(`[Penalty] Evaluating Entry ${entryId}: currentCount=${currentCount}, prevCount=${prevCount}`);
 
     if (prevCount === undefined) {
       // New entry found. If it was created within the last 20 seconds, attribute it.
