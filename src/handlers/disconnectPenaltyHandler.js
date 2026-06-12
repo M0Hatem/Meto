@@ -16,6 +16,10 @@ const activeTier1Penalties = new Map();
 // Per-guild debounce: guildId -> timestamp of last processed penalty (prevents double-counting)
 const lastPenaltyTime = new Map();
 
+// State to track audit log entry IDs and counts to handle aggregation
+// guildId -> Map(entryId -> count)
+const processedAuditLogEntries = new Map();
+
 function getOrCreateData(userId) {
   if (!penaltyData.has(userId)) {
     penaltyData.set(userId, { strikes: 0, tier: 0, resetTimer: null });
@@ -26,8 +30,56 @@ function getOrCreateData(userId) {
 // ─── Audit log lookup ──────────────────────────────────────────
 
 /**
+ * Pre-populate tracking with existing audit log entries so that network disconnects
+ * are not misattributed, and the first user action is correctly captured.
+ * @param {import('discord.js').Client} primaryClient
+ * @param {object} secondaryClient
+ */
+async function initializeAuditLogTracking(primaryClient, secondaryClient) {
+  if (!primaryClient || !secondaryClient) return;
+  const secondaryUserId = secondaryClient.user?.id;
+  if (!secondaryUserId) return;
+
+  for (const guild of primaryClient.guilds.cache.values()) {
+    try {
+      const disconnectLogs = await guild.fetchAuditLogs({
+        type: AuditLogEvent.MemberDisconnect,
+        limit: 10
+      }).catch(() => null);
+
+      const moveLogs = await guild.fetchAuditLogs({
+        type: AuditLogEvent.MemberMove,
+        limit: 10
+      }).catch(() => null);
+
+      const guildMap = new Map();
+
+      if (disconnectLogs) {
+        for (const entry of disconnectLogs.entries.values()) {
+          if (entry.targetId === secondaryUserId) {
+            guildMap.set(entry.id, entry.extra?.count || 1);
+          }
+        }
+      }
+      if (moveLogs) {
+        for (const entry of moveLogs.entries.values()) {
+          if (entry.targetId === secondaryUserId) {
+            guildMap.set(entry.id, entry.extra?.count || 1);
+          }
+        }
+      }
+
+      processedAuditLogEntries.set(guild.id, guildMap);
+      console.log(`[Penalty] Initialized audit log tracking for guild ${guild.id}. Cached ${guildMap.size} entries.`);
+    } catch (err) {
+      console.error(`[Penalty] Failed to initialize audit log tracking for guild ${guild.id}:`, err.message);
+    }
+  }
+}
+
+/**
  * Look up who disconnected or moved the bot using the guild audit log.
- * Checks both MEMBER_DISCONNECT and MEMBER_MOVE entries from the last 15 seconds.
+ * Tracks entry IDs and counts to handle Discord's aggregation behavior.
  * @param {import('discord.js').Guild} guild
  * @param {import('discord.js').Client} primaryClient  - The main bot (has VIEW_AUDIT_LOG)
  * @param {object|null} secondaryClient - The selfbot streamer client
@@ -42,45 +94,89 @@ async function findDisconnector(guild, primaryClient, secondaryClient) {
     targetGuild = guild;
   }
 
-  const now = Date.now();
-  const lookbackMs = 15_000; // 15 seconds
+  const secondaryUserId = secondaryClient?.user?.id;
+  if (!secondaryUserId) return null;
 
   // Helper: skip entries from our own bots
   const isSelf = (id) =>
-    id === primaryClient.user.id ||
-    (secondaryClient && id === secondaryClient.user?.id);
+    id === primaryClient.user.id || id === secondaryUserId;
 
-  // Check MEMBER_DISCONNECT audit log
+  let disconnectLogs;
   try {
-    const logs = await targetGuild.fetchAuditLogs({
+    disconnectLogs = await targetGuild.fetchAuditLogs({
       type: AuditLogEvent.MemberDisconnect,
-      limit: 5
+      limit: 10
     });
-    for (const entry of logs.entries.values()) {
-      if (now - entry.createdTimestamp < lookbackMs && !isSelf(entry.executor.id)) {
-        return entry.executor.id;
-      }
-    }
   } catch (err) {
     console.error('[Penalty] Failed to fetch MEMBER_DISCONNECT audit log:', err.message);
   }
 
-  // Check MEMBER_MOVE audit log
+  let moveLogs;
   try {
-    const logs = await targetGuild.fetchAuditLogs({
+    moveLogs = await targetGuild.fetchAuditLogs({
       type: AuditLogEvent.MemberMove,
-      limit: 5
+      limit: 10
     });
-    for (const entry of logs.entries.values()) {
-      if (now - entry.createdTimestamp < lookbackMs && !isSelf(entry.executor.id)) {
-        return entry.executor.id;
-      }
-    }
   } catch (err) {
     console.error('[Penalty] Failed to fetch MEMBER_MOVE audit log:', err.message);
   }
 
-  return null;
+  const entries = [];
+  if (disconnectLogs) entries.push(...disconnectLogs.entries.values());
+  if (moveLogs) entries.push(...moveLogs.entries.values());
+
+  // Filter entries targeting our secondary bot, and not executed by our bots
+  const relevantEntries = entries
+    .filter(entry => entry.targetId === secondaryUserId && !isSelf(entry.executor.id))
+    .sort((a, b) => b.createdTimestamp - a.createdTimestamp);
+
+  if (relevantEntries.length === 0) {
+    console.log(`[Penalty] [Guild: ${guild.id}] No relevant audit log entries found targeting the bot.`);
+    return null;
+  }
+
+  if (!processedAuditLogEntries.has(guild.id)) {
+    processedAuditLogEntries.set(guild.id, new Map());
+  }
+  const guildMap = processedAuditLogEntries.get(guild.id);
+
+  let detectedExecutor = null;
+
+  for (const entry of relevantEntries) {
+    const entryId = entry.id;
+    const currentCount = entry.extra?.count || 1;
+    const prevCount = guildMap.get(entryId);
+
+    if (prevCount === undefined) {
+      // New entry found. If it was created within the last 20 seconds, attribute it.
+      guildMap.set(entryId, currentCount);
+      const age = Date.now() - entry.createdTimestamp;
+      if (age < 20000) {
+        console.log(`[Penalty] Found new audit log entry ${entryId} (age: ${age}ms) targeting bot. Executor: ${entry.executor.id}`);
+        detectedExecutor = entry.executor.id;
+        break; // Stop at the newest matching event
+      } else {
+        console.log(`[Penalty] Latest audit log entry ${entryId} is too old (age: ${age}ms). Skipping.`);
+      }
+    } else if (currentCount > prevCount) {
+      // Count has increased on an existing entry.
+      console.log(`[Penalty] Audit log entry ${entryId} count increased from ${prevCount} to ${currentCount}. Executor: ${entry.executor.id}`);
+      guildMap.set(entryId, currentCount);
+      detectedExecutor = entry.executor.id;
+      break; // Stop at the newest matching event
+    }
+  }
+
+  // Backfill counts for all other relevant entries we saw to keep our local map in sync
+  for (const entry of relevantEntries) {
+    const entryId = entry.id;
+    const currentCount = entry.extra?.count || 1;
+    if (!guildMap.has(entryId)) {
+      guildMap.set(entryId, currentCount);
+    }
+  }
+
+  return detectedExecutor;
 }
 
 // ─── Main handler ──────────────────────────────────────────────
@@ -266,5 +362,6 @@ module.exports = {
   handleBotDisconnected,
   cleanupPenalties,
   penaltyData,
-  lastPenaltyTime
+  lastPenaltyTime,
+  initializeAuditLogTracking
 };

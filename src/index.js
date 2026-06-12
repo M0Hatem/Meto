@@ -49,7 +49,7 @@ const { cleanupWakeLoops } = require('./handlers/wakeHandler');
 const { handleMessageCreate } = require('./handlers/messageHandler');
 const { handleInteractionCreate } = require('./handlers/interactionHandler');
 const { cleanupAllStreams, stopStreamForGuild } = require('./handlers/streamHandler');
-const { cleanupPenalties } = require('./handlers/disconnectPenaltyHandler');
+const { cleanupPenalties, initializeAuditLogTracking } = require('./handlers/disconnectPenaltyHandler');
 
 // Validate secondary client (self-bot user token) for VC/streaming
 const tokenSecondary = process.env.DISCORD_TOKEN_SECONDARY;
@@ -133,6 +133,9 @@ client.once('ready', async () => {
 
   // Register commands globally
   await registerSlashCommands(client.user.id, token);
+
+  // Initialize audit log tracking if secondary client is already ready
+  tryInitAuditLogs();
 });
 
 // Message handler for processing Facebook links
@@ -143,6 +146,12 @@ client.on('messageCreate', async (message) => {
 // Initialize and login Secondary and Tertiary Bots if configured
 let clientSecondary = null;
 let clientTertiary = null;
+
+function tryInitAuditLogs() {
+  if (client.readyAt && clientSecondary && clientSecondary.readyAt) {
+    initializeAuditLogTracking(client, clientSecondary);
+  }
+}
 
 (async () => {
   if (tokenSecondary && tokenSecondary !== 'replace_this_with_your_actual_bot_token' && tokenSecondary.trim() !== '') {
@@ -170,6 +179,9 @@ let clientTertiary = null;
       console.log(`🤖 Meto Bot (Secondary / ${clientSecondary.isSelfbot ? 'Self-bot' : 'Bot'}) is online and ready!`);
       console.log(`Logged in as: ${clientSecondary.user.tag}`);
       console.log(`=========================================`);
+
+      // Initialize audit log tracking if primary client is already ready
+      tryInitAuditLogs();
 
       // Set Twitch streaming status
       try {
