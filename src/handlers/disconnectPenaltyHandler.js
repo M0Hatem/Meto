@@ -265,7 +265,7 @@ async function handleBotDisconnected(guild, executorId, secondaryClient, primary
       `⚠️ Strike **${data.strikes}/${MAX_STRIKES}** — **${remaining}** more and you will face the WRATH!\n` +
       `Next penalty: **${tierLabel}**\n` +
       `Resets in **5 minutes** if you stop doing that.\n` +
-      `[​](https://tenor.com/view/tung-tung-tung-tung-sahur-tung-tung-sahur-tung-tung-tung-sahur-brainrot-baseball-gif-13999381090646842001)`
+      `[.​](https://tenor.com/view/tung-tung-tung-tung-sahur-tung-tung-sahur-tung-tung-tung-sahur-brainrot-baseball-gif-13999381090646842001)`
     ).catch(err => console.error('[Penalty] Failed to send warning:', err.message));
 
     return;
