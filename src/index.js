@@ -257,11 +257,16 @@ let clientTertiary = null;
     const { getActiveConnections, setupVoiceConnection } = require('./handlers/voiceHandler');
     const { activeStreams, restartStreamIfActive } = require('./handlers/streamHandler');
 
+    if (activeStreams.size === 0) return; // Nothing to monitor
+
+    console.log(`[StreamMonitor] Running health check for ${activeStreams.size} tracked stream(s)...`);
+
     for (const [guildId, activeInfo] of activeStreams.entries()) {
       try {
         const guildConns = getActiveConnections().get(guildId);
         if (!guildConns || !guildConns.primary) {
           // Primary bot is not in voice in this guild, skip
+          console.log(`[StreamMonitor] [Guild: ${guildId}] Primary bot not in voice. Skipping.`);
           continue;
         }
 
@@ -273,28 +278,57 @@ let clientTertiary = null;
 
         let needRejoin = false;
         let needStreamRestart = false;
+        let reason = '';
 
         if (!guildConns.secondary || !guildConns.secondary.connection) {
           needRejoin = true;
+          reason = 'secondary connection missing entirely';
         } else {
           const streamer = guildConns.secondary.connection;
           if (!streamer.voiceConnection) {
             needRejoin = true;
+            reason = 'streamer.voiceConnection is null/undefined';
           } else if (!streamer.voiceConnection.streamConnection) {
             needStreamRestart = true;
+            reason = 'streamConnection is null/undefined (Go Live not active)';
+          } else {
+            // Stream connection object exists — but is it actually alive?
+            const sc = streamer.voiceConnection.streamConnection;
+
+            // Check WebSocket readyState if available (1 = OPEN)
+            const wsReady = sc.ws?.readyState;
+            if (wsReady !== undefined && wsReady !== 1) {
+              needStreamRestart = true;
+              reason = `streamConnection WebSocket readyState is ${wsReady} (not OPEN)`;
+            }
+
+            // Check if UDP client exists and is alive
+            if (!needStreamRestart && !sc.udp) {
+              needStreamRestart = true;
+              reason = 'streamConnection.udp is missing (no UDP transport)';
+            }
+
+            // Check if the stream has been "up" for a while but no packets are being sent
+            // by verifying the connection hasn't been silently closed
+            if (!needStreamRestart && sc.ready === false) {
+              needStreamRestart = true;
+              reason = 'streamConnection.ready is false (connection not ready)';
+            }
           }
         }
 
         if (needRejoin) {
-          console.log(`[StreamMonitor] Secondary bot should be streaming in guild ${guildId} but is not joined. Joining...`);
+          console.log(`[StreamMonitor] [Guild: ${guildId}] Stream should be active but needs REJOIN. Reason: ${reason}`);
           // Clean up any stale secondary connection state first to prevent double-joining conflicts
           if (guildConns.secondary && guildConns.secondary.connection) {
             try { guildConns.secondary.connection.leaveVoice(); } catch (_) {}
           }
           await setupVoiceConnection(clientSecondary, guild, channel, 'secondary');
         } else if (needStreamRestart) {
-          console.log(`[StreamMonitor] Secondary bot is joined but not streaming in guild ${guildId}. Restarting stream...`);
+          console.log(`[StreamMonitor] [Guild: ${guildId}] Stream should be active but needs RESTART. Reason: ${reason}`);
           await restartStreamIfActive(guildId);
+        } else {
+          console.log(`[StreamMonitor] [Guild: ${guildId}] Stream is healthy. ✅`);
         }
       } catch (monitorErr) {
         console.error(`[StreamMonitor] Error checking/restoring stream in guild ${guildId}:`, monitorErr.message);

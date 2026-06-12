@@ -175,31 +175,44 @@ async function restartStreamIfActive(guildId) {
     }
     restartingStreams.add(guildId);
     console.log(`[StreamHandler] [Guild: ${guildId}] Re-establishing stream after voice rejoin...`);
-    try {
-      // Stop any stale stream connection state
-      try {
-        console.log(`[StreamHandler] [Guild: ${guildId}] Stopping stale stream connection...`);
-        active.streamer.stopStream();
-      } catch (_) {}
 
-      const config = getStreamConfig(guildId);
-      console.log(`[StreamHandler] [Guild: ${guildId}] Initializing stream re-creation...`);
-      await active.streamer.createStream({
-        width: config.width || 1280,
-        height: config.height || 720,
-        fps: config.fps || 30,
-        bitrateKbps: config.bitrateKbps || 2500,
-        maxBitrateKbps: (config.bitrateKbps || 2500) * 1.5,
-        videoCodec: 'H264',
-        readAtNativeFps: true,
-        hardwareAcceleratedDecoding: false
-      });
-      console.log(`[StreamHandler] [Guild: ${guildId}] Stream re-established successfully.`);
-    } catch (err) {
-      console.error(`[StreamHandler] [Guild: ${guildId}] Failed to re-establish stream:`, err.message);
-    } finally {
-      restartingStreams.delete(guildId);
+    const maxRetries = 3;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        // Stop any stale stream connection state
+        try {
+          console.log(`[StreamHandler] [Guild: ${guildId}] Stopping stale stream connection...`);
+          active.streamer.stopStream();
+        } catch (_) {}
+
+        // Wait for the voice gateway to settle before re-creating the stream.
+        // After a move, Discord needs a moment to finalize the new voice session.
+        const delay = attempt === 1 ? 2000 : attempt * 3000;
+        console.log(`[StreamHandler] [Guild: ${guildId}] Waiting ${delay}ms before stream re-creation (attempt ${attempt}/${maxRetries})...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+
+        const config = getStreamConfig(guildId);
+        console.log(`[StreamHandler] [Guild: ${guildId}] Initializing stream re-creation (attempt ${attempt}/${maxRetries})...`);
+        await active.streamer.createStream({
+          width: config.width || 1280,
+          height: config.height || 720,
+          fps: config.fps || 30,
+          bitrateKbps: config.bitrateKbps || 2500,
+          maxBitrateKbps: (config.bitrateKbps || 2500) * 1.5,
+          videoCodec: 'H264',
+          readAtNativeFps: true,
+          hardwareAcceleratedDecoding: false
+        });
+        console.log(`[StreamHandler] [Guild: ${guildId}] Stream re-established successfully on attempt ${attempt}. ✅`);
+        break; // Success — exit retry loop
+      } catch (err) {
+        console.error(`[StreamHandler] [Guild: ${guildId}] Failed to re-establish stream (attempt ${attempt}/${maxRetries}):`, err.message);
+        if (attempt === maxRetries) {
+          console.error(`[StreamHandler] [Guild: ${guildId}] All ${maxRetries} restart attempts failed. Stream may be down until next health check.`);
+        }
+      }
     }
+    restartingStreams.delete(guildId);
   }
 }
 
