@@ -22,8 +22,10 @@ COPY package*.json ./
 
 RUN npm ci --only=production
 
-# Bundle app source
+# Bundle app source and config files
 COPY src/ ./src/
+COPY data/ ./data/
+COPY allowed_servers.json* ./
 
 # Create a directory for temporary video files
 RUN mkdir -p temp

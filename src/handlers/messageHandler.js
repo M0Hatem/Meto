@@ -78,6 +78,79 @@ async function handleMessageCreate(message, client, clientSecondary, allowedServ
   }
   // --- END OF PEACE TREATY ---
 
+  // --- AI CHAT FOR SECONDARY BOT ---
+  if (clientSecondary && clientSecondary.user) {
+    const secondaryId = clientSecondary.user.id;
+    const isMentionedParsed = message.mentions.users.has(secondaryId);
+    const isMentionedRaw = message.content.includes(`<@${secondaryId}>`) || message.content.includes(`<@!${secondaryId}>`);
+    const isMentioned = isMentionedParsed || isMentionedRaw;
+
+    let isReplyToSecondary = false;
+    let referencedMessage = null;
+
+    if (message.reference && message.reference.messageId) {
+      try {
+        referencedMessage = await message.channel.messages.fetch(message.reference.messageId).catch(() => null);
+        if (referencedMessage && referencedMessage.author.id === secondaryId) {
+          isReplyToSecondary = true;
+        }
+      } catch (err) {
+        console.error('[AI] Failed to fetch referenced message:', err.message);
+      }
+    }
+
+    if (isMentioned || isReplyToSecondary) {
+      console.log(`[AI] AI prompt triggered by message from ${message.author.tag} (ID: ${message.author.id}) | isMentioned=${isMentioned} | isReply=${isReplyToSecondary}`);
+      
+      if (!process.env.GEMINI_API_KEY) {
+        console.warn('[AI] GEMINI_API_KEY is not set in environment variables.');
+        return;
+      }
+
+      try {
+        const secondaryChannel = await clientSecondary.channels.fetch(message.channel.id).catch(() => null);
+        if (secondaryChannel) {
+          // Trigger typing status on secondary bot
+          await secondaryChannel.sendTyping().catch(() => {});
+          
+          const { generateAIReply } = require('./aiHandler');
+          
+          // Clean the message of the secondary bot's mention
+          let cleanedContent = message.content.replace(new RegExp(`<@!?${secondaryId}>`, 'g'), '').trim();
+
+          const replyText = await generateAIReply(
+            cleanedContent, 
+            message.author.displayName || message.author.username, 
+            referencedMessage
+          );
+
+          if (replyText) {
+            let replied = false;
+            try {
+              const secondaryMsg = await secondaryChannel.messages.fetch(message.id).catch(() => null);
+              if (secondaryMsg) {
+                await secondaryMsg.reply({ content: replyText });
+                replied = true;
+              }
+            } catch (err) {
+              console.warn('[AI] Failed to thread-reply via secondary bot, falling back to channel send:', err.message);
+            }
+
+            if (!replied) {
+              await secondaryChannel.send({ content: replyText }).catch(err => {
+                console.error('[AI] Failed to send message via secondary bot channel:', err.message);
+              });
+            }
+          }
+        }
+      } catch (err) {
+        console.error('[AI] Error in handleMessageCreate AI integration:', err);
+      }
+      return; // Stop processing further handlers (like FB links) for this message
+    }
+  }
+  // --- END OF AI CHAT FOR SECONDARY BOT ---
+
   // Check if server is whitelisted (if whitelist is active)
   if (allowedServers && (!message.guildId || !allowedServers.includes(message.guildId))) {
     return;
