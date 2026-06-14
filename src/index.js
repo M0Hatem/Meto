@@ -320,17 +320,13 @@ function tryInitAuditLogs() {
               reason = `streamConnection WebSocket readyState is ${wsReady} (not OPEN)`;
             }
 
-            // Check if UDP client exists and is alive
-            if (!needStreamRestart && !sc.udp) {
-              needStreamRestart = true;
-              reason = 'streamConnection.udp is missing (no UDP transport)';
-            }
-
-            // Check if the stream has been "up" for a while but no packets are being sent
-            // by verifying the connection hasn't been silently closed
-            if (!needStreamRestart && sc.ready === false) {
-              needStreamRestart = true;
-              reason = 'streamConnection.ready is false (connection not ready)';
+            // Check PeerConnection state to ensure the WebRTC transport is alive and hasn't failed/closed
+            if (!needStreamRestart) {
+              const pcState = sc.webRtcConn?.webRtcConn?.state();
+              if (pcState && (pcState === 'failed' || pcState === 'closed')) {
+                needStreamRestart = true;
+                reason = `stream connection PeerConnection state is ${pcState}`;
+              }
             }
           }
         }

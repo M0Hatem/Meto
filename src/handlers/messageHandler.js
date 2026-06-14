@@ -121,7 +121,8 @@ async function handleMessageCreate(message, client, clientSecondary, allowedServ
           const replyText = await generateAIReply(
             cleanedContent, 
             message.author.displayName || message.author.username, 
-            referencedMessage
+            referencedMessage,
+            message
           );
 
           if (replyText) {

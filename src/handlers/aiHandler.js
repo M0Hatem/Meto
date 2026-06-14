@@ -2,7 +2,7 @@ const Groq = require('groq-sdk');
 
 let groq = null;
 
-const SYSTEM_PROMPT =
+const BASE_SYSTEM_PROMPT =
   "You are Meto (ميتو), a friendly, cool, and helpful Discord assistant. " +
   "Keep your responses short, natural, engaging, and under 1800 characters to fit " +
   "within Discord's message limits. Use Arabic primarily (with Egyptian/friendly dialect) " +
@@ -52,38 +52,163 @@ async function callGroqWithRetry(client, options, maxRetries = 3) {
 }
 
 /**
+ * Clean a string to conform to Groq's name requirement (only alphanumeric, underscores, hyphens, max 64 chars).
+ * Appends the user ID to ensure uniqueness.
+ */
+function sanitizeName(name, userId = '') {
+  let cleaned = name.replace(/[^a-zA-Z0-9_-]/g, '');
+  if (!cleaned) {
+    cleaned = 'user';
+  }
+  if (userId) {
+    cleaned = `${cleaned}_${userId}`;
+  }
+  return cleaned.substring(0, 64);
+}
+
+/**
  * Generates an AI response using Groq.
  * @param {string} userMessage The cleaned text message from the user
  * @param {string} username The display name or username of the message author
  * @param {object|null} referencedMessage The referenced message object if replying, or null
+ * @param {import('discord.js').Message|null} message The full Discord Message object for context
  * @returns {Promise<string>}
  */
-async function generateAIReply(userMessage, username, referencedMessage) {
+async function generateAIReply(userMessage, username, referencedMessage, message) {
   try {
     const client = getAIClient();
     
-    let promptParts = [];
-    const messageText = userMessage ? userMessage.trim() : '';
+    // 1. Gather dynamic environment awareness context
+    let contextParts = [];
     
+    if (message && message.guild) {
+      contextParts.push(`Current Server (Guild): "${message.guild.name}" (ID: ${message.guild.id})`);
+      contextParts.push(`Current Text Channel: "#${message.channel.name}" (ID: ${message.channel.id})`);
+      
+      try {
+        const { getActiveConnections } = require('./voiceHandler');
+        const { activeStreams } = require('./streamHandler');
+        const { penaltyData } = require('./disconnectPenaltyHandler');
+        
+        const guildConns = getActiveConnections().get(message.guild.id);
+        const primaryInVoice = guildConns?.primary ? `connected in VC channel <#${guildConns.primary.channelId}>` : 'not in any voice channel';
+        const secondaryInVoice = guildConns?.secondary ? `connected in VC channel <#${guildConns.secondary.channelId}>` : 'not in any voice channel';
+        
+        contextParts.push(`Primary Bot Voice Status: ${primaryInVoice}`);
+        contextParts.push(`Secondary Bot Voice Status: ${secondaryInVoice}`);
+        
+        const isStreaming = activeStreams.has(message.guild.id);
+        if (isStreaming) {
+          const streamInfo = activeStreams.get(message.guild.id);
+          contextParts.push(`Secondary Bot Stream Status: STREAMING (Go Live active, loading screen) in VC <#${streamInfo.channelId}>`);
+        } else {
+          contextParts.push(`Secondary Bot Stream Status: Not currently streaming.`);
+        }
+        
+        // Sender penalty details
+        const senderPenalty = penaltyData.get(message.author.id);
+        if (senderPenalty) {
+          contextParts.push(`Current speaker (${message.author.username}) penalty profile: ${senderPenalty.strikes} strikes, Tier ${senderPenalty.tier} active penalty.`);
+        } else {
+          contextParts.push(`Current speaker (${message.author.username}) penalty profile: Clean record (0 strikes, no active penalties).`);
+        }
+        
+        // Sender timeout details
+        const timedOut = message.member?.communicationDisabledUntilTimestamp && message.member.communicationDisabledUntilTimestamp > Date.now();
+        if (timedOut) {
+          const timeLeft = Math.round((message.member.communicationDisabledUntilTimestamp - Date.now()) / 1000);
+          contextParts.push(`Current speaker is TIMED OUT (muted) on Discord for another ${timeLeft} seconds.`);
+        }
+        
+        // List other users with active penalty data
+        let otherPenalties = [];
+        for (const [userId, pData] of penaltyData.entries()) {
+          if (userId !== message.author.id && (pData.strikes > 0 || pData.tier > 0)) {
+            const member = message.guild.members.cache.get(userId);
+            const name = member ? member.user.username : `User ID ${userId}`;
+            otherPenalties.push(`${name}: ${pData.strikes} strikes, Tier ${pData.tier}`);
+          }
+        }
+        if (otherPenalties.length > 0) {
+          contextParts.push(`Other active user penalties in this server:\n- ${otherPenalties.join('\n- ')}`);
+        }
+      } catch (err) {
+        console.error('[AI] Error gathering voice/penalty context:', err);
+      }
+    }
+    
+    // Construct the customized system instruction including awareness context
+    let fullSystemPrompt = BASE_SYSTEM_PROMPT;
+    if (contextParts.length > 0) {
+      fullSystemPrompt += '\n\nHere is your current live Discord runtime context:\n' + contextParts.join('\n');
+    }
+    
+    // 2. Fetch recent message history in the channel to maintain conversation flow
+    let chatMessages = [];
+    const sanitizedUsername = sanitizeName(username, message ? message.author.id : '');
+    const messageText = userMessage ? userMessage.trim() : '';
+
+    if (message && message.channel) {
+      try {
+        const recentMessages = await message.channel.messages.fetch({ limit: 8 });
+        // Filter out current message (to add it explicitly with proper formatting)
+        const historyList = [...recentMessages.values()]
+          .filter(m => m.id !== message.id)
+          .reverse();
+          
+        for (const msg of historyList) {
+          const isMeto = msg.author.id === message.client.user.id || 
+                         (message.clientSecondary && msg.author.id === message.clientSecondary.user?.id);
+          
+          let content = msg.content ? msg.content.trim() : '';
+          
+          // Remove mentions of the secondary bot from history content to clean up text
+          const secondaryId = message.clientSecondary?.user?.id;
+          if (secondaryId) {
+            content = content.replace(new RegExp(`<@!?${secondaryId}>`, 'g'), '').trim();
+          }
+          
+          if (isMeto) {
+            chatMessages.push({
+              role: 'assistant',
+              content: content || '(sent a video/embed/file)'
+            });
+          } else {
+            const authorName = msg.author.displayName || msg.author.username;
+            chatMessages.push({
+              role: 'user',
+              name: sanitizeName(authorName, msg.author.id),
+              content: `${authorName} said: "${content || '(sent an attachment/embed)'}"`
+            });
+          }
+        }
+      } catch (err) {
+        console.error('[AI] Failed to fetch channel conversation history:', err);
+      }
+    }
+
+    // 3. Handle context of referenced message (replies) if not present in history
+    let contextHeader = '';
     if (referencedMessage) {
       const refAuthor = referencedMessage.author?.displayName || referencedMessage.author?.username || 'Meto';
       const refContent = referencedMessage.content ? referencedMessage.content.trim() : '(Attachment/Embed)';
-      
-      promptParts.push(`Here is the conversation context:`);
-      promptParts.push(`${refAuthor} said: "${refContent}"`);
-      promptParts.push(`${username} replied: "${messageText || '(sent an empty reply or attachment)'}"`);
-    } else {
-      promptParts.push(`${username} said: "${messageText || '(mentioned you without any text)'}"`);
+      contextHeader = `[Replying to ${refAuthor} who said: "${refContent}"]\n`;
     }
     
-    const prompt = promptParts.join('\n');
-    console.log(`[AI] Generating reply for prompt using Groq:\n${prompt}`);
+    // Add current user prompt as final message
+    chatMessages.push({
+      role: 'user',
+      name: sanitizedUsername,
+      content: `${contextHeader}${username} said: "${messageText || '(mentioned you)'}"`
+    });
+
+    console.log(`[AI] Generating reply for ${username} in server: ${message?.guild?.name || 'DM'}`);
     
     const completion = await callGroqWithRetry(client, {
       model: 'llama-3.3-70b-versatile',
       messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user', content: prompt }
+        { role: 'system', content: fullSystemPrompt },
+        ...chatMessages
       ],
       max_tokens: 1024,
       temperature: 0.8,
