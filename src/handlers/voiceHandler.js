@@ -40,10 +40,24 @@ async function getSecondaryStreamer(clientSecondary) {
 // state = { connection, channelId, authorizedDisconnect }
 const voiceConnections = new Map();
 
+// Debounce: prevent multiple secondary rejoins within a short window
+// guildId -> timestamp of last setupVoiceConnection call for secondary
+const lastSecondaryJoin = new Map();
+const SECONDARY_JOIN_COOLDOWN_MS = 3000; // 3 seconds
+
 // Helper function to set up and manage voice connections for a specific bot client (type: 'primary' | 'secondary')
 async function setupVoiceConnection(botClient, guild, channel, type = 'primary') {
   try {
     if (type === 'secondary' && botClient.isSelfbot) {
+      // Debounce: skip if we just rejoined this guild recently
+      const now = Date.now();
+      const lastJoin = lastSecondaryJoin.get(guild.id) || 0;
+      if (now - lastJoin < SECONDARY_JOIN_COOLDOWN_MS) {
+        console.log(`[Voice - secondary] [Guild: ${guild.id}] Skipping rejoin — cooldown active (${now - lastJoin}ms since last join).`);
+        return;
+      }
+      lastSecondaryJoin.set(guild.id, now);
+
       const streamer = await getSecondaryStreamer(botClient);
       if (!streamer) {
         throw new Error('Secondary streamer client is not ready or not initialized.');
@@ -70,55 +84,18 @@ async function setupVoiceConnection(botClient, guild, channel, type = 'primary')
       
       // Auto-restart stream if it was active before the disconnect/move
       try {
-        const { restartStreamIfActive, activeStreams } = require('./streamHandler');
+        const { restartStreamIfActive } = require('./streamHandler');
         console.log(`[Voice - secondary] [Guild: ${guild.id}] Triggering stream check/restart...`);
         await restartStreamIfActive(guild.id);
       } catch (err) {
         console.error(`[Voice - secondary] [Guild: ${guild.id}] Failed to check/restart active stream:`, err.message);
       }
 
-      // Post-rejoin verification: 10 seconds after rejoin, verify the stream is truly alive.
-      // If it's not, force-restart it. This catches silent failures from the initial restart.
+      // Post-rejoin penalty safety net (5s): catch rapid re-disconnects whose voiceStateUpdate may be missed
       const guildIdCapture = guild.id;
       setTimeout(async () => {
         try {
-          const { restartStreamIfActive, activeStreams } = require('./streamHandler');
-          if (!activeStreams.has(guildIdCapture)) return; // Stream was intentionally stopped, nothing to verify
-
-          const currentConns = voiceConnections.get(guildIdCapture);
-          if (!currentConns || !currentConns.secondary || !currentConns.secondary.connection) {
-            console.log(`[StreamVerify] [Guild: ${guildIdCapture}] Post-rejoin check: secondary connection gone. Skipping.`);
-            return;
-          }
-
-          const str = currentConns.secondary.connection;
-          let streamOk = false;
-
-          if (str.voiceConnection && str.voiceConnection.streamConnection) {
-            const sc = str.voiceConnection.streamConnection;
-            const wsOpen = sc.ws?.readyState === undefined || sc.ws?.readyState === 1;
-            const hasUdp = !!sc.udp;
-            const isReady = sc.ready !== false;
-            streamOk = wsOpen && hasUdp && isReady;
-          }
-
-          if (streamOk) {
-            console.log(`[StreamVerify] [Guild: ${guildIdCapture}] Post-rejoin check passed — stream is alive. ✅`);
-          } else {
-            console.log(`[StreamVerify] [Guild: ${guildIdCapture}] Post-rejoin check FAILED — stream is not properly established. Force-restarting...`);
-            await restartStreamIfActive(guildIdCapture);
-          }
-        } catch (verifyErr) {
-          console.error(`[StreamVerify] [Guild: ${guildIdCapture}] Error during post-rejoin verification:`, verifyErr.message);
-        }
-      }, 10_000);
-
-      // Post-rejoin penalty safety net (5s): catch rapid re-disconnects whose voiceStateUpdate may be missed
-      setTimeout(async () => {
-        try {
           if (!_primaryClient || !_secondaryClient) return;
-          const { activeStreams } = require('./streamHandler');
-          if (!activeStreams.has(guildIdCapture)) return; // Stream not active, nothing to guard
 
           // Use the primary client (proper bot) to check the secondary bot's actual voice state
           const g = _primaryClient.guilds.cache.get(guildIdCapture);
@@ -144,16 +121,7 @@ async function setupVoiceConnection(botClient, guild, channel, type = 'primary')
                 await handleBotDisconnected(g, executorId, _secondaryClient, _primaryClient);
               }
             }
-
-            // Trigger re-rejoin regardless (bot should be in voice)
-            const currentConns = voiceConnections.get(guildIdCapture);
-            if (currentConns?.secondary?.channelId) {
-              const targetCh = g.channels.cache.get(currentConns.secondary.channelId);
-              if (targetCh) {
-                console.log(`[PenaltyVerify] [Guild: ${guildIdCapture}] Triggering re-rejoin to ${currentConns.secondary.channelId}...`);
-                await setupVoiceConnection(_secondaryClient, g, targetCh, 'secondary');
-              }
-            }
+            // Note: no re-rejoin here — the voiceStateUpdate handler handles that
           }
         } catch (err) {
           console.error(`[PenaltyVerify] [Guild: ${guildIdCapture}] Error:`, err.message);

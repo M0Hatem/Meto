@@ -177,15 +177,16 @@ async function restartStreamIfActive(guildId) {
     console.log(`[StreamHandler] [Guild: ${guildId}] Re-establishing stream after voice rejoin...`);
 
     try {
+      // Stop any stale stream connection state ONCE before retrying
+      try {
+        console.log(`[StreamHandler] [Guild: ${guildId}] Stopping stale stream connection...`);
+        active.streamer.stopStream();
+      } catch (_) {}
+
       const maxRetries = 3;
+      let succeeded = false;
       for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
-          // Stop any stale stream connection state
-          try {
-            console.log(`[StreamHandler] [Guild: ${guildId}] Stopping stale stream connection...`);
-            active.streamer.stopStream();
-          } catch (_) {}
-
           // Wait for the voice gateway to settle before re-creating the stream.
           // After a move, Discord needs a moment to finalize the new voice session.
           const delay = attempt === 1 ? 2000 : attempt * 3000;
@@ -205,6 +206,7 @@ async function restartStreamIfActive(guildId) {
             hardwareAcceleratedDecoding: false
           });
           console.log(`[StreamHandler] [Guild: ${guildId}] Stream re-established successfully on attempt ${attempt}. ✅`);
+          succeeded = true;
           break; // Success — exit retry loop
         } catch (err) {
           const errMsg = err ? (err.message || err) : 'Unknown error';
@@ -213,6 +215,13 @@ async function restartStreamIfActive(guildId) {
             console.error(`[StreamHandler] [Guild: ${guildId}] All ${maxRetries} restart attempts failed. Stream may be down until next health check.`);
           }
         }
+      }
+
+      // Hold the lock for 15 seconds after success to prevent other mechanisms
+      // (StreamMonitor, etc.) from immediately restarting again
+      if (succeeded) {
+        console.log(`[StreamHandler] [Guild: ${guildId}] Holding restart lock for 15s cooldown...`);
+        await new Promise(resolve => setTimeout(resolve, 15000));
       }
     } finally {
       restartingStreams.delete(guildId);
