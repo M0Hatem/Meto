@@ -1,25 +1,58 @@
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const Groq = require('groq-sdk');
 
-let genAI = null;
-let model = null;
+let groq = null;
 
-function getAIModel() {
-  if (!genAI) {
-    const apiKey = process.env.GEMINI_API_KEY;
+const SYSTEM_PROMPT =
+  "You are Meto (ميتو), a friendly, cool, and helpful Discord assistant. " +
+  "Keep your responses short, natural, engaging, and under 1800 characters to fit " +
+  "within Discord's message limits. Use Arabic primarily (with Egyptian/friendly dialect) " +
+  "or match the language of the user. Be helpful, polite, and witty.";
+
+function getAIClient() {
+  if (!groq) {
+    const apiKey = process.env.GROQ_API_KEY;
     if (!apiKey) {
-      throw new Error('GEMINI_API_KEY is not set in the environment variables.');
+      throw new Error('GROQ_API_KEY is not set in the environment variables.');
     }
-    genAI = new GoogleGenerativeAI(apiKey);
-    model = genAI.getGenerativeModel({
-      model: 'gemini-2.0-flash',
-      systemInstruction: 'You are Meto (ميتو), a friendly, cool, and helpful Discord assistant. Keep your responses short, natural, engaging, and under 1800 characters to fit within Discord\'s message limits. Use Arabic primarily (with Egyptian/friendly dialect) or match the language of the user. Be helpful, polite, and witty.',
-    });
+    groq = new Groq({ apiKey });
   }
-  return model;
+  return groq;
 }
 
 /**
- * Generates an AI response using Gemini.
+ * Robust helper to call Groq API with retries on rate limits (429 status codes).
+ */
+async function callGroqWithRetry(client, options, maxRetries = 3) {
+  let attempt = 0;
+  while (attempt < maxRetries) {
+    try {
+      return await client.chat.completions.create(options);
+    } catch (error) {
+      attempt++;
+      const isRateLimit = error.status === 429 || 
+                          (error.message && error.message.includes('429')) || 
+                          (error.code && error.code === 'rate_limit_exceeded');
+
+      if (isRateLimit && attempt < maxRetries) {
+        // Look for retry-after header in seconds, fallback to exponential backoff with jitter
+        let retryAfterMs = Math.pow(2, attempt) * 1000 + Math.random() * 1000;
+        if (error.headers && error.headers['retry-after']) {
+          const retryAfterSec = parseFloat(error.headers['retry-after']);
+          if (!isNaN(retryAfterSec)) {
+            retryAfterMs = retryAfterSec * 1000;
+          }
+        }
+        console.warn(`[AI] Rate limit hit (429). Retrying attempt ${attempt}/${maxRetries} after ${Math.round(retryAfterMs)}ms...`);
+        await new Promise(resolve => setTimeout(resolve, retryAfterMs));
+      } else {
+        throw error;
+      }
+    }
+  }
+}
+
+/**
+ * Generates an AI response using Groq.
  * @param {string} userMessage The cleaned text message from the user
  * @param {string} username The display name or username of the message author
  * @param {object|null} referencedMessage The referenced message object if replying, or null
@@ -27,7 +60,7 @@ function getAIModel() {
  */
 async function generateAIReply(userMessage, username, referencedMessage) {
   try {
-    const aiModel = getAIModel();
+    const client = getAIClient();
     
     let promptParts = [];
     const messageText = userMessage ? userMessage.trim() : '';
@@ -44,14 +77,19 @@ async function generateAIReply(userMessage, username, referencedMessage) {
     }
     
     const prompt = promptParts.join('\n');
-    console.log(`[AI] Generating reply for prompt:\n${prompt}`);
+    console.log(`[AI] Generating reply for prompt using Groq:\n${prompt}`);
     
-    const result = await aiModel.generateContent({
-      contents: [{ role: 'user', parts: [{ text: prompt }] }]
+    const completion = await callGroqWithRetry(client, {
+      model: 'llama-3.3-70b-versatile',
+      messages: [
+        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'user', content: prompt }
+      ],
+      max_tokens: 1024,
+      temperature: 0.8,
     });
     
-    const response = await result.response;
-    let text = response.text();
+    let text = completion.choices[0]?.message?.content;
     
     if (!text) {
       return 'لم أستطع فهم ذلك، هل يمكنك توضيح السؤال؟';

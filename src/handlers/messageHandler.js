@@ -102,8 +102,8 @@ async function handleMessageCreate(message, client, clientSecondary, allowedServ
     if (isMentioned || isReplyToSecondary) {
       console.log(`[AI] AI prompt triggered by message from ${message.author.tag} (ID: ${message.author.id}) | isMentioned=${isMentioned} | isReply=${isReplyToSecondary}`);
       
-      if (!process.env.GEMINI_API_KEY) {
-        console.warn('[AI] GEMINI_API_KEY is not set in environment variables.');
+      if (!process.env.GROQ_API_KEY) {
+        console.warn('[AI] GROQ_API_KEY is not set in environment variables.');
         return;
       }
 
