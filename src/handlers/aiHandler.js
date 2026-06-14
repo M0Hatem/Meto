@@ -3,10 +3,12 @@ const Groq = require('groq-sdk');
 let groq = null;
 
 const BASE_SYSTEM_PROMPT =
-  "You are Meto (ميتو), a friendly, cool, and helpful Discord assistant. " +
-  "Keep your responses short, natural, engaging, and under 1800 characters to fit " +
-  "within Discord's message limits. Use Arabic primarily (with Egyptian/friendly dialect) " +
-  "or match the language of the user. Be helpful, polite, and witty.";
+  "You are Meto (ميتو), a cool, witty, and helpful Discord assistant. " +
+  "Instructions:\n" +
+  "1. Keep your responses short, natural, and under 1800 characters.\n" +
+  "2. Respond in a natural Egyptian Arabic dialect (لهجة مصرية عامية) that sounds authentic and friendly. Avoid formal or poorly translated Arabic.\n" +
+  "3. Avoid using too many emojis. Use at most 1 or 2 emojis per message, or none at all.\n" +
+  "4. Do NOT start your message with your name (like 'ميتو:') or wrap your message in quotation marks. Just output the actual reply text directly.";
 
 function getAIClient() {
   if (!groq) {
@@ -162,7 +164,7 @@ async function generateAIReply(userMessage, username, referencedMessage, message
           
           let content = msg.content ? msg.content.trim() : '';
           
-          // Remove mentions of the secondary bot from history content to clean up text
+          // Remove mentions of the secondary bot from history content
           const secondaryId = message.clientSecondary?.user?.id;
           if (secondaryId) {
             content = content.replace(new RegExp(`<@!?${secondaryId}>`, 'g'), '').trim();
@@ -178,7 +180,7 @@ async function generateAIReply(userMessage, username, referencedMessage, message
             chatMessages.push({
               role: 'user',
               name: sanitizeName(authorName, msg.author.id),
-              content: `${authorName} said: "${content || '(sent an attachment/embed)'}"`
+              content: content || '(sent an attachment/embed)'
             });
           }
         }
@@ -188,18 +190,18 @@ async function generateAIReply(userMessage, username, referencedMessage, message
     }
 
     // 3. Handle context of referenced message (replies) if not present in history
-    let contextHeader = '';
+    let finalContent = messageText || '(mentioned you)';
     if (referencedMessage) {
-      const refAuthor = referencedMessage.author?.displayName || referencedMessage.author?.username || 'Meto';
+      const refAuthor = referencedMessage.author?.displayName || referencedMessage.author?.username || 'User';
       const refContent = referencedMessage.content ? referencedMessage.content.trim() : '(Attachment/Embed)';
-      contextHeader = `[Replying to ${refAuthor} who said: "${refContent}"]\n`;
+      finalContent = `[Replying to ${refAuthor}'s message: "${refContent}"]\n${finalContent}`;
     }
     
     // Add current user prompt as final message
     chatMessages.push({
       role: 'user',
       name: sanitizedUsername,
-      content: `${contextHeader}${username} said: "${messageText || '(mentioned you)'}"`
+      content: finalContent
     });
 
     console.log(`[AI] Generating reply for ${username} in server: ${message?.guild?.name || 'DM'}`);
