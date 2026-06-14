@@ -141,7 +141,7 @@ client.once('ready', async () => {
 
 // Message handler for processing Facebook links
 client.on('messageCreate', async (message) => {
-  await handleMessageCreate(message, client, allowedServers, MAX_FILE_SIZE_MB);
+  await handleMessageCreate(message, client, clientSecondary, allowedServers, MAX_FILE_SIZE_MB);
 });
 
 // Initialize and login Secondary and Tertiary Bots if configured

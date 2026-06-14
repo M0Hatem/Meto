@@ -4,9 +4,58 @@ const { downloadVideo } = require('../utils/videoDownloader');
 const { createVideoEmbed } = require('../utils/embedBuilder');
 const { sendWebhookMessage } = require('../utils/webhookHandler');
 
-async function handleMessageCreate(message, client, allowedServers, MAX_FILE_SIZE_MB) {
+async function handleMessageCreate(message, client, clientSecondary, allowedServers, MAX_FILE_SIZE_MB) {
   // Ignore messages from bots (prevent infinite loops)
   if (message.author.bot) return;
+
+  // --- PEACE TREATY / REMOVE PENALTY COMMAND ---
+  // Format: Mention secondary bot + "معاهدة سلام" + Mention one or more users
+  if (clientSecondary && clientSecondary.user && message.mentions.users.has(clientSecondary.user.id)) {
+    const isAuthorized = message.author.id === '476908643711713280';
+    const contentNormalized = message.content.toLowerCase();
+    
+    if (contentNormalized.includes('معاهدة سلام')) {
+      if (!isAuthorized) {
+        return;
+      }
+
+      // Extract mentioned users that are not bots and not the secondary bot itself
+      const targetUsers = message.mentions.users.filter(u => 
+        u.id !== clientSecondary.user.id && 
+        u.id !== client.user.id && 
+        !u.bot
+      );
+
+      if (targetUsers.size > 0 && message.guild) {
+        const { removePenalty } = require('./disconnectPenaltyHandler');
+        const targetIds = [...targetUsers.keys()];
+        
+        try {
+          const cleared = await removePenalty(message.guild, targetIds, client);
+          
+          // Secondary bot replies "استلمت يكبير" if any penalty cleared, or "مفيش عقوبات تتشال يا غالي" if none
+          const secondaryChannel = await clientSecondary.channels.fetch(message.channel.id).catch(() => null);
+          if (secondaryChannel) {
+            const secondaryMessage = await secondaryChannel.messages.fetch(message.id).catch(() => null);
+            const replyText = cleared ? 'استلمت يكبير' : 'مفيش عقوبات تتشال يا غالي';
+            if (secondaryMessage) {
+              await secondaryMessage.reply(replyText).catch(err => 
+                console.error('[Penalty] Secondary bot failed to reply to peace treaty:', err.message)
+              );
+            } else {
+              await secondaryChannel.send(replyText).catch(err => 
+                console.error('[Penalty] Secondary bot failed to send peace treaty message:', err.message)
+              );
+            }
+          }
+        } catch (err) {
+          console.error('[Penalty] Error processing peace treaty:', err.message);
+        }
+      }
+      return; // Do not process FB links or replies for this command message
+    }
+  }
+  // --- END OF PEACE TREATY ---
 
   // Check if server is whitelisted (if whitelist is active)
   if (allowedServers && (!message.guildId || !allowedServers.includes(message.guildId))) {

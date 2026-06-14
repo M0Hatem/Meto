@@ -369,11 +369,67 @@ function cleanupPenalties() {
   activeTier1Penalties.clear();
 }
 
+/**
+ * Removes any active penalty or strike data for a set of user IDs in a guild.
+ * @param {import('discord.js').Guild} guild
+ * @param {string[]} userIds
+ * @param {import('discord.js').Client} primaryClient
+ * @returns {Promise<boolean>} Whether any penalty was actually cleared
+ */
+async function removePenalty(guild, userIds, primaryClient) {
+  let clearedAny = false;
+  for (const userId of userIds) {
+    let userCleared = false;
+
+    // 1. Cancel active tier-1 penalty interval if any
+    if (activeTier1Penalties.has(userId)) {
+      clearInterval(activeTier1Penalties.get(userId));
+      activeTier1Penalties.delete(userId);
+      userCleared = true;
+      console.log(`[Penalty] Cancelled active tier-1 penalty for user ${userId}.`);
+    }
+
+    // 2. Clear penalty tracking data and reset timers
+    if (penaltyData.has(userId)) {
+      const data = penaltyData.get(userId);
+      if (data.strikes > 0 || data.tier > 0 || data.resetTimer) {
+        userCleared = true;
+      }
+      if (data.resetTimer) {
+        clearTimeout(data.resetTimer);
+      }
+      penaltyData.delete(userId);
+      console.log(`[Penalty] Cleared strikes/tier data for user ${userId}.`);
+    }
+
+    // 3. Remove active timeouts (tier-2 penalty) in the guild
+    try {
+      const member = await guild.members.fetch(userId).catch(() => null);
+      if (member) {
+        if (member.communicationDisabledUntilTimestamp && member.communicationDisabledUntilTimestamp > Date.now()) {
+          await member.timeout(null, 'Penalty removed via peace treaty');
+          userCleared = true;
+          console.log(`[Penalty] Removed active timeout for user ${userId}.`);
+        }
+      }
+    } catch (err) {
+      console.error(`[Penalty] Failed to remove timeout for user ${userId} in guild ${guild.id}:`, err.message);
+    }
+
+    if (userCleared) {
+      clearedAny = true;
+    }
+  }
+  return clearedAny;
+}
+
 module.exports = {
   findDisconnector,
   handleBotDisconnected,
   cleanupPenalties,
   penaltyData,
   lastPenaltyTime,
-  initializeAuditLogTracking
+  initializeAuditLogTracking,
+  removePenalty
 };
+
