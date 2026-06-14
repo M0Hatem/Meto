@@ -10,47 +10,68 @@ async function handleMessageCreate(message, client, clientSecondary, allowedServ
 
   // --- PEACE TREATY / REMOVE PENALTY COMMAND ---
   // Format: Mention secondary bot + "معاهدة سلام" + Mention one or more users
-  if (clientSecondary && clientSecondary.user && message.mentions.users.has(clientSecondary.user.id)) {
-    const isAuthorized = message.author.id === '476908643711713280';
-    const contentNormalized = message.content.toLowerCase();
-    
-    if (contentNormalized.includes('معاهدة سلام')) {
+  if (clientSecondary && clientSecondary.user) {
+    const secondaryId = clientSecondary.user.id;
+    // Check if the secondary bot is mentioned — either via parsed mentions or raw content
+    const isMentionedParsed = message.mentions.users.has(secondaryId);
+    const isMentionedRaw = message.content.includes(`<@${secondaryId}>`) || message.content.includes(`<@!${secondaryId}>`);
+    const isMentioned = isMentionedParsed || isMentionedRaw;
+
+    console.log(`[PeaceTreaty] Message from ${message.author.id} | secondaryId=${secondaryId} | mentionedParsed=${isMentionedParsed} | mentionedRaw=${isMentionedRaw} | content="${message.content}"`);
+
+    if (isMentioned && message.content.includes('معاهدة سلام')) {
+      const isAuthorized = message.author.id === '476908643711713280';
+      console.log(`[PeaceTreaty] Peace treaty detected! isAuthorized=${isAuthorized}`);
+
       if (!isAuthorized) {
         return;
       }
 
       // Extract mentioned users that are not bots and not the secondary bot itself
-      const targetUsers = message.mentions.users.filter(u => 
-        u.id !== clientSecondary.user.id && 
-        u.id !== client.user.id && 
+      const targetUsers = message.mentions.users.filter(u =>
+        u.id !== secondaryId &&
+        u.id !== client.user.id &&
         !u.bot
       );
+
+      console.log(`[PeaceTreaty] Target users: ${[...targetUsers.keys()].join(', ')} (count: ${targetUsers.size})`);
 
       if (targetUsers.size > 0 && message.guild) {
         const { removePenalty } = require('./disconnectPenaltyHandler');
         const targetIds = [...targetUsers.keys()];
-        
+
         try {
           const cleared = await removePenalty(message.guild, targetIds, client);
-          
-          // Secondary bot replies "استلمت يكبير" if any penalty cleared, or "مفيش عقوبات تتشال يا غالي" if none
-          const secondaryChannel = await clientSecondary.channels.fetch(message.channel.id).catch(() => null);
-          if (secondaryChannel) {
-            const secondaryMessage = await secondaryChannel.messages.fetch(message.id).catch(() => null);
-            const replyText = cleared ? 'استلمت يكبير' : 'مفيش عقوبات تتشال يا غالي';
-            if (secondaryMessage) {
-              await secondaryMessage.reply(replyText).catch(err => 
-                console.error('[Penalty] Secondary bot failed to reply to peace treaty:', err.message)
-              );
-            } else {
-              await secondaryChannel.send(replyText).catch(err => 
-                console.error('[Penalty] Secondary bot failed to send peace treaty message:', err.message)
-              );
+          console.log(`[PeaceTreaty] removePenalty returned cleared=${cleared}`);
+
+          const replyText = cleared ? 'استلمت يكبير' : 'مفيش عقوبات تتشال يا غالي';
+
+          // Try sending the reply from the secondary bot
+          let replied = false;
+          try {
+            const secondaryChannel = await clientSecondary.channels.fetch(message.channel.id);
+            console.log(`[PeaceTreaty] Secondary channel fetched: ${!!secondaryChannel}`);
+            if (secondaryChannel) {
+              await secondaryChannel.send(replyText);
+              replied = true;
+              console.log(`[PeaceTreaty] Secondary bot sent reply successfully.`);
             }
+          } catch (secErr) {
+            console.error(`[PeaceTreaty] Secondary bot failed to send reply:`, secErr.message);
+          }
+
+          // Fallback: if secondary bot couldn't reply, use primary bot
+          if (!replied) {
+            console.log(`[PeaceTreaty] Falling back to primary bot for reply.`);
+            await message.channel.send(replyText).catch(err =>
+              console.error('[PeaceTreaty] Primary bot also failed to send reply:', err.message)
+            );
           }
         } catch (err) {
-          console.error('[Penalty] Error processing peace treaty:', err.message);
+          console.error('[PeaceTreaty] Error processing peace treaty:', err.message);
         }
+      } else {
+        console.log(`[PeaceTreaty] No valid target users found or no guild context.`);
       }
       return; // Do not process FB links or replies for this command message
     }
