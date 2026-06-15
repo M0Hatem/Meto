@@ -8,3 +8,4 @@ src/stream/streamAssets/*.webm
 src/stream/streamAssets/*.mkv
 token-extractor/node_modules/
 token-extractor/dist/
+GEMINI.md

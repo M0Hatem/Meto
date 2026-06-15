@@ -427,18 +427,52 @@ async function generateAIReply(userMessage, username, referencedMessage, message
       content: finalContent
     });
 
-    console.log(`[AI] Generating reply for ${username} in server: ${message?.guild?.name || 'DM'}`);
+    const baseModel = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
+    const modelsToTry = [baseModel];
+    if (baseModel !== 'llama-3.1-8b-instant') {
+      modelsToTry.push('llama-3.1-8b-instant');
+    }
+    if (baseModel !== 'gemma2-9b-it') {
+      modelsToTry.push('gemma2-9b-it');
+    }
 
-    const model = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
-    const completion = await callGroqWithRotation({
-      model: model,
-      messages: [
-        { role: 'system', content: fullSystemPrompt },
-        ...chatMessages
-      ],
-      max_tokens: 1024,
-      temperature: 0.8,
-    });
+    let completion = null;
+    let lastError = null;
+
+    for (const modelToTry of modelsToTry) {
+      try {
+        console.log(`[AI] Attempting response generation using model: ${modelToTry}`);
+        completion = await callGroqWithRotation({
+          model: modelToTry,
+          messages: [
+            { role: 'system', content: fullSystemPrompt },
+            ...chatMessages
+          ],
+          max_tokens: 1024,
+          temperature: 0.8,
+        });
+        break; // Success!
+      } catch (err) {
+        lastError = err;
+        const isRateLimit = err.status === 429 ||
+          (err.message && err.message.includes('429')) ||
+          (err.code && err.code === 'rate_limit_exceeded');
+
+        if (isRateLimit) {
+          console.warn(`[AI] Model ${modelToTry} encountered a rate limit (TPD/RPD). Trying fallback model...`);
+          continue;
+        } else {
+          throw err; // For non-rate-limit errors, fail fast
+        }
+      }
+    }
+
+    if (!completion) {
+      if (lastError) {
+        throw lastError;
+      }
+      throw new Error('Failed to generate response: all models failed.');
+    }
 
     let text = completion.choices[0]?.message?.content;
 
