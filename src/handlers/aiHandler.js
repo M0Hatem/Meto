@@ -4,6 +4,20 @@ let clients = null;
 let currentClientIndex = 0;
 let initialized = false;
 
+const dmHistory = [];
+
+function recordDM(senderId, senderTag, content) {
+  dmHistory.push({
+    senderId,
+    senderTag,
+    content,
+    timestamp: Date.now()
+  });
+  if (dmHistory.length > 50) {
+    dmHistory.shift();
+  }
+}
+
 const BASE_SYSTEM_PROMPT =
   "You are Meto (ميتو), a sharp-witted, intelligent, and extremely cool Discord assistant who speaks in natural Egyptian Arabic (لهجة مصرية عامية) by default, but responds in English if the user writes or asks in English.\n" +
   "Instructions:\n" +
@@ -93,10 +107,10 @@ function initializeClients() {
 
 function getAIClient() {
   initializeClients();
-  
+
   const now = Date.now();
   let selectedIdx = currentClientIndex;
-  
+
   for (let i = 0; i < clients.length; i++) {
     const idx = (currentClientIndex + i) % clients.length;
     const clientInfo = clients[idx];
@@ -105,7 +119,7 @@ function getAIClient() {
       break;
     }
   }
-  
+
   currentClientIndex = selectedIdx;
   return clients[selectedIdx];
 }
@@ -127,13 +141,13 @@ async function callGroqWithRotation(options, maxAttemptsPerClient = 3) {
       return await clientInfo.client.chat.completions.create(options);
     } catch (error) {
       attempts++;
-      const isRateLimit = error.status === 429 || 
-                          (error.message && error.message.includes('429')) || 
-                          (error.code && error.code === 'rate_limit_exceeded');
+      const isRateLimit = error.status === 429 ||
+        (error.message && error.message.includes('429')) ||
+        (error.code && error.code === 'rate_limit_exceeded');
 
       if (isRateLimit) {
         clientInfo.lastRateLimited = Date.now();
-        
+
         let retryAfterMs = 5000; // default 5 seconds
         if (error.headers && error.headers['retry-after']) {
           const retryAfterSec = parseFloat(error.headers['retry-after']);
@@ -195,66 +209,133 @@ function sanitizeName(name, userId = '') {
  */
 async function generateAIReply(userMessage, username, referencedMessage, message, forceAggressive = false) {
   try {
-    
+
     // 1. Gather dynamic environment awareness context
     let contextParts = [];
-    
-    if (message && message.guild) {
-      contextParts.push(`Current Server (Guild): "${message.guild.name}" (ID: ${message.guild.id})`);
-      contextParts.push(`Current Text Channel: "#${message.channel.name}" (ID: ${message.channel.id})`);
-      
-      try {
-        const { getActiveConnections } = require('./voiceHandler');
-        const { activeStreams } = require('./streamHandler');
-        const { penaltyData } = require('./disconnectPenaltyHandler');
-        
-        const guildConns = getActiveConnections().get(message.guild.id);
-        const primaryInVoice = guildConns?.primary ? `connected in VC channel <#${guildConns.primary.channelId}>` : 'not in any voice channel';
-        const secondaryInVoice = guildConns?.secondary ? `connected in VC channel <#${guildConns.secondary.channelId}>` : 'not in any voice channel';
-        
-        contextParts.push(`Primary Bot Voice Status: ${primaryInVoice}`);
-        contextParts.push(`Secondary Bot Voice Status: ${secondaryInVoice}`);
-        
-        const isStreaming = activeStreams.has(message.guild.id);
-        if (isStreaming) {
-          const streamInfo = activeStreams.get(message.guild.id);
-          contextParts.push(`Secondary Bot Stream Status: STREAMING (Go Live active, loading screen) in VC <#${streamInfo.channelId}>`);
-        } else {
-          contextParts.push(`Secondary Bot Stream Status: Not currently streaming.`);
+
+    if (message) {
+      if (message.channel) {
+        contextParts.push(`Current Text Channel: "#${message.channel.name || 'DM'}" (ID: ${message.channel.id})`);
+        if (message.channel.createdTimestamp) {
+          const ageMs = Date.now() - message.channel.createdTimestamp;
+          const ageDays = (ageMs / (1000 * 60 * 60 * 24)).toFixed(1);
+          contextParts.push(`Current Text Channel age: ${ageDays} days since creation.`);
         }
-        
-        // Sender penalty details
-        const senderPenalty = penaltyData.get(message.author.id);
-        if (senderPenalty) {
-          contextParts.push(`Current speaker (${message.author.username}) penalty profile: ${senderPenalty.strikes} strikes, Tier ${senderPenalty.tier} active penalty.`);
-        } else {
-          contextParts.push(`Current speaker (${message.author.username}) penalty profile: Clean record (0 strikes, no active penalties).`);
-        }
-        
-        // Sender timeout details
-        const timedOut = message.member?.communicationDisabledUntilTimestamp && message.member.communicationDisabledUntilTimestamp > Date.now();
-        if (timedOut) {
-          const timeLeft = Math.round((message.member.communicationDisabledUntilTimestamp - Date.now()) / 1000);
-          contextParts.push(`Current speaker is TIMED OUT (muted) on Discord for another ${timeLeft} seconds.`);
-        }
-        
-        // List other users with active penalty data
-        let otherPenalties = [];
-        for (const [userId, pData] of penaltyData.entries()) {
-          if (userId !== message.author.id && (pData.strikes > 0 || pData.tier > 0)) {
-            const member = message.guild.members.cache.get(userId);
-            const name = member ? member.user.username : `User ID ${userId}`;
-            otherPenalties.push(`${name}: ${pData.strikes} strikes, Tier ${pData.tier}`);
+      }
+
+      if (message.guild) {
+        contextParts.push(`Current Server (Guild): "${message.guild.name}" (ID: ${message.guild.id})`);
+
+        try {
+          const { getActiveConnections } = require('./voiceHandler');
+          const { activeStreams } = require('./streamHandler');
+          const { penaltyData } = require('./disconnectPenaltyHandler');
+
+          const guildConns = getActiveConnections().get(message.guild.id);
+          const primaryInVoice = guildConns?.primary ? `connected in VC channel <#${guildConns.primary.channelId}>` : 'not in any voice channel';
+          const secondaryInVoice = guildConns?.secondary ? `connected in VC channel <#${guildConns.secondary.channelId}>` : 'not in any voice channel';
+
+          contextParts.push(`Primary Bot Voice Status: ${primaryInVoice}`);
+          contextParts.push(`Secondary Bot Voice Status: ${secondaryInVoice}`);
+
+          const isStreaming = activeStreams.has(message.guild.id);
+          if (isStreaming) {
+            const streamInfo = activeStreams.get(message.guild.id);
+            contextParts.push(`Secondary Bot Stream Status: STREAMING (Go Live active, loading screen) in VC <#${streamInfo.channelId}>`);
+          } else {
+            contextParts.push(`Secondary Bot Stream Status: Not currently streaming.`);
           }
+
+          // Sender penalty details
+          if (message.author) {
+            const senderPenalty = penaltyData.get(message.author.id);
+            if (senderPenalty) {
+              contextParts.push(`Current speaker (${message.author.username}) penalty profile: ${senderPenalty.strikes} strikes, Tier ${senderPenalty.tier} active penalty.`);
+            } else {
+              contextParts.push(`Current speaker (${message.author.username}) penalty profile: Clean record (0 strikes, no active penalties).`);
+            }
+          }
+
+          // Sender timeout details
+          const timedOut = message.member?.communicationDisabledUntilTimestamp && message.member.communicationDisabledUntilTimestamp > Date.now();
+          if (timedOut) {
+            const timeLeft = Math.round((message.member.communicationDisabledUntilTimestamp - Date.now()) / 1000);
+            contextParts.push(`Current speaker is TIMED OUT (muted) on Discord for another ${timeLeft} seconds.`);
+          }
+
+          // List other users with active penalty data
+          let otherPenalties = [];
+          for (const [userId, pData] of penaltyData.entries()) {
+            if (message.author && userId !== message.author.id && (pData.strikes > 0 || pData.tier > 0)) {
+              const member = message.guild.members.cache.get(userId);
+              const name = member ? member.user.username : `User ID ${userId}`;
+              otherPenalties.push(`${name}: ${pData.strikes} strikes, Tier ${pData.tier}`);
+            }
+          }
+          if (otherPenalties.length > 0) {
+            contextParts.push(`Other active user penalties in this server:\n- ${otherPenalties.join('\n- ')}`);
+          }
+
+          // Gather guild members presence and username to ID mapping for mentions
+          try {
+            const members = await message.guild.members.fetch();
+            let activeMembers = [];
+            let memberList = [];
+
+            members.forEach(member => {
+              if (member.user.bot) return;
+
+              // Username to ID mapping
+              memberList.push(`${member.user.username} (ID: ${member.user.id})`);
+
+              const presence = member.presence;
+              const voice = member.voice;
+
+              let info = [];
+              if (voice && voice.channel) {
+                info.push(`connected to VC channel <#${voice.channel.id}>`);
+              }
+              if (presence && presence.activities && presence.activities.length > 0) {
+                const activities = presence.activities.map(act => `playing ${act.name}`).join(', ');
+                info.push(activities);
+              }
+
+              if (info.length > 0) {
+                activeMembers.push(`${member.user.username} is ${info.join(' and ')}`);
+              }
+            });
+
+            if (memberList.length > 0) {
+              contextParts.push(`Guild member list (username to ID mapping for mentions):\n- ${memberList.join('\n- ')}`);
+            }
+            if (activeMembers.length > 0) {
+              contextParts.push(`Live member status & activities:\n- ${activeMembers.join('\n- ')}`);
+            }
+          } catch (fetchErr) {
+            console.error('[AI] Failed to fetch guild members presence info:', fetchErr.message);
+          }
+        } catch (err) {
+          console.error('[AI] Error gathering voice/penalty context:', err);
         }
-        if (otherPenalties.length > 0) {
-          contextParts.push(`Other active user penalties in this server:\n- ${otherPenalties.join('\n- ')}`);
-        }
-      } catch (err) {
-        console.error('[AI] Error gathering voice/penalty context:', err);
       }
     }
-    
+
+    // Include the current speaker's ID
+    const currentUserId = message && message.author ? message.author.id : '';
+    contextParts.push(`Current user ID speaking to you: "${currentUserId}"`);
+
+    // Include MENTION rules
+    contextParts.push(`MENTION RULES: If and only if the user explicitly asks you to 'mention' or 'ping' someone, you can include their Discord ping in your response formatted exactly as \`<@userId>\` (using the username-to-ID list provided). NEVER include raw mentions/pings in normal replies unless specifically requested.`);
+
+    // Include DM history logs in context
+    if (dmHistory.length > 0) {
+      const dmLogs = dmHistory.map(dm => {
+        return `- At ${new Date(dm.timestamp).toISOString()}, user ${dm.senderTag} (ID: ${dm.senderId}) sent DM: "${dm.content}"`;
+      }).join('\n');
+
+      contextParts.push(`DM history logs:\n${dmLogs}\n\nCRITICAL SECURITY RULE: You must NEVER share the content of these DMs with anyone EXCEPT if the current user ID is exactly "476908643711713280". If anyone else asks you what someone DM'd you, refuse to show the content of the message.`);
+    }
+
     // Construct the customized system instruction including awareness context
     let fullSystemPrompt = BASE_SYSTEM_PROMPT;
     if (contextParts.length > 0) {
@@ -263,7 +344,7 @@ async function generateAIReply(userMessage, username, referencedMessage, message
     if (forceAggressive) {
       fullSystemPrompt += "\n\nCRITICAL PERSONALITY INSTRUCTION: Reply to this message by ROASTING the user who sent it. Be extremely sarcastic, mock them, and use funny roasts or witty insults in Egyptian Arabic (لهجة مصرية عامية) (or in English if the input message is in English). Speak with total attitude, roast them hard, and show no politeness or filters.";
     }
-    
+
     // 2. Fetch recent message history in the channel to maintain conversation flow
     let chatMessages = [];
     const sanitizedUsername = sanitizeName(username, message ? message.author.id : '');
@@ -276,19 +357,19 @@ async function generateAIReply(userMessage, username, referencedMessage, message
         const historyList = [...recentMessages.values()]
           .filter(m => m.id !== message.id)
           .reverse();
-          
+
         for (const msg of historyList) {
-          const isMeto = msg.author.id === message.client.user.id || 
-                         (message.clientSecondary && msg.author.id === message.clientSecondary.user?.id);
-          
+          const isMeto = msg.author.id === message.client.user.id ||
+            (message.clientSecondary && msg.author.id === message.clientSecondary.user?.id);
+
           let content = msg.content ? msg.content.trim() : '';
-          
+
           // Remove mentions of the secondary bot from history content
           const secondaryId = message.clientSecondary?.user?.id;
           if (secondaryId) {
             content = content.replace(new RegExp(`<@!?${secondaryId}>`, 'g'), '').trim();
           }
-          
+
           if (isMeto) {
             chatMessages.push({
               role: 'assistant',
@@ -315,7 +396,7 @@ async function generateAIReply(userMessage, username, referencedMessage, message
       const refContent = referencedMessage.content ? referencedMessage.content.trim() : '(Attachment/Embed)';
       finalContent = `[Replying to ${refAuthor}'s message: "${refContent}"]\n${finalContent}`;
     }
-    
+
     // Add current user prompt as final message
     chatMessages.push({
       role: 'user',
@@ -324,7 +405,7 @@ async function generateAIReply(userMessage, username, referencedMessage, message
     });
 
     console.log(`[AI] Generating reply for ${username} in server: ${message?.guild?.name || 'DM'}`);
-    
+
     const model = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
     const completion = await callGroqWithRotation({
       model: model,
@@ -335,18 +416,46 @@ async function generateAIReply(userMessage, username, referencedMessage, message
       max_tokens: 1024,
       temperature: 0.8,
     });
-    
+
     let text = completion.choices[0]?.message?.content;
-    
+
     if (!text) {
       return 'لم أستطع فهم ذلك، هل يمكنك توضيح السؤال؟';
     }
-    
+
+    // Random attachment check (1/12 chance)
+    if (Math.random() < (1 / 12)) {
+      const links = [
+        "https://cdn.discordapp.com/attachments/1222752342227816591/1515915944738820147/105ad1a683290e05ddb27b8645055cec.jpg?ex=6a30be3d&is=6a2f6cbd&hm=6d458754442ed945753fbc454ab3ccce004995a5ad0c7d584da6ce0504124448&",
+        "https://tenor.com/view/horse-mewing-mogging-sigma-brainrot-gif-11578561155013280151",
+        "https://tenor.com/view/bricks-brick-food-eat-meme-gif-14828762640844660771",
+        "https://tenor.com/view/monkeys-monkey-gorilla-ape-hug-gif-14004263079835426812",
+        "https://tenor.com/view/mooda-valorant-gif-10509470946568055468",
+        "https://cdn.discordapp.com/attachments/1256739316906852474/1356663570670158057/togif.gif?ex=6a302568&is=6a2ed3e8&hm=d89f72c39628a3acc831aa802de19a5404ed4b463eff7fd1b2b786eee06e3fa1&",
+        "https://tenor.com/view/squidward-meme-brain-smooth-chatbubble-gif-16562439958126711181",
+        "https://giphy.com/gifs/meme-godzilla-FQnbqw46iIjXL7jEPz",
+        "https://tenor.com/view/this-shit-so-ass-broken-heart-gif-10202854693394846922",
+        "https://tenor.com/view/fade-cat-haircut-gif-25438705",
+        "https://cdn.discordapp.com/attachments/1222752342227816591/1514817882200997938/PSR_Clips_The_Pink_Glock_1.gif?ex=6a30b417&is=6a2f6297&hm=4c06ce9ee106baf0a836f74be74e0ec85e5dae182f60532d2e0ca661669326eb&",
+        "https://cdn.discordapp.com/attachments/822929633427193907/1334485939233493144/vquAYmo.gif?ex=6a308b21&is=6a2f39a1&hm=ddf4bdf76f13e60d73baa766ee162e4d0044e788a967a8ab1391006661b873d8&",
+        "https://tenor.com/view/oceanmam-barber-lip-bite-gif-8052459839889670503",
+        "https://tenor.com/view/dumb-patrick-futbol-gif-11812562785713247979",
+        "https://cdn.discordapp.com/attachments/1476111656382763059/1485659626014773349/image0.gif?ex=6a301859&is=6a2ec6d9&hm=c69d79416996694c9014b8c168d83cd0f293a4d8ebc6a3361bfead78f483a9b6&",
+        "https://tenor.com/view/jimmy-butler-jummy-butler-meme-jimmy-butler-paper-gif-5377364994336871762",
+        "https://giphy.com/gifs/man-pretty-wow-geXJ0CoZr9PyM",
+        "https://tenor.com/view/tuff-tuff-minion-tuff-minoin-hoverboard-gif-17512699728490497347",
+        "https://giphy.com/gifs/netflix-and-chill-gfl7CKcgs6exW",
+        "https://giphy.com/gifs/wgoZpooFm1i2FfYPyY"
+      ];
+      const randomLink = links[Math.floor(Math.random() * links.length)];
+      text += ` [.](${randomLink})`;
+    }
+
     // Safety check for length
     if (text.length > 2000) {
       text = text.substring(0, 1990) + '...';
     }
-    
+
     return text;
   } catch (error) {
     console.error('[AI] Error generating AI response:', error);
@@ -356,5 +465,6 @@ async function generateAIReply(userMessage, username, referencedMessage, message
 
 module.exports = {
   generateAIReply,
-  isAIEnabled
+  isAIEnabled,
+  recordDM
 };

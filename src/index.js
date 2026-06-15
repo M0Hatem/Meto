@@ -120,7 +120,8 @@ const client = new Client({
     GatewayIntentBits.GuildMembers, // Required to fetch member lists for broadcast
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildVoiceStates
+    GatewayIntentBits.GuildVoiceStates,
+    GatewayIntentBits.GuildPresences
   ]
 });
 
@@ -237,6 +238,24 @@ function tryInitAuditLogs() {
     clientSecondary.on('messageCreate', async (message) => {
       const { handleSecondaryMessage } = require('./handlers/messageHandler');
       await handleSecondaryMessage(message, client, clientSecondary);
+    });
+
+    clientSecondary.on('relationshipAdd', async (userId) => {
+      if (!clientSecondary.relationships) return;
+      const relationshipType = clientSecondary.relationships.cache.get(userId);
+      // Relationship type 3 represents incoming pending friend request
+      if (relationshipType === 3) {
+        console.log(`[Secondary Bot] Incoming friend request from user ID ${userId}. Auto-accepting...`);
+        try {
+          await clientSecondary.api.users['@me'].relationships[userId].put({
+            data: { confirm_stranger_request: true },
+            DiscordContext: { location: 'Friends' }
+          });
+          console.log(`[Secondary Bot] Successfully accepted friend request from user ID ${userId}`);
+        } catch (err) {
+          console.error(`[Secondary Bot] Failed to accept friend request from user ID ${userId}:`, err.message);
+        }
+      }
     });
 
     clientSecondary.login(tokenSecondary).catch(err => {

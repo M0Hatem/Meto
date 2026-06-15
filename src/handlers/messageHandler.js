@@ -299,7 +299,7 @@ async function handleMessageCreate(message, client, clientSecondary, allowedServ
   }
 }
 
-let lastSecondaryChannelId = null;
+let lastSecondaryChannelId = '1222752342227816591';
 
 async function handleSecondaryMessage(message, client, clientSecondary) {
   // Ignore messages from the secondary bot itself (prevent loops)
@@ -344,6 +344,14 @@ async function handleSecondaryMessage(message, client, clientSecondary) {
   if (!message.guild) {
     console.log(`[Secondary DM] Received DM from ${message.author.tag} (ID: ${message.author.id}): "${message.content}"`);
 
+    // Record DM in history logs
+    try {
+      const { recordDM } = require('./aiHandler');
+      recordDM(message.author.id, message.author.tag, message.content || '');
+    } catch (dmRecErr) {
+      console.error('[Secondary DM] Failed to record DM in history:', dmRecErr.message);
+    }
+
     if (!lastSecondaryChannelId) {
       console.warn('[Secondary DM] No last server channel tracked yet. Cannot mirror DM.');
       return;
@@ -386,7 +394,12 @@ async function handleSecondaryMessage(message, client, clientSecondary) {
       try {
         const secondaryChannel = await clientSecondary.channels.fetch(lastSecondaryChannelId);
         if (secondaryChannel) {
-          const secondaryMsg = await secondaryChannel.messages.fetch(mirroredMsg.id).catch(() => null);
+          let secondaryMsg = null;
+          try {
+            secondaryMsg = await secondaryChannel.messages.fetch(mirroredMsg.id);
+          } catch (fetchErr) {
+            // Safe fallback if fetch fails
+          }
           if (secondaryMsg) {
             const emoji = getReactionEmoji(message.content);
             await secondaryMsg.react(emoji).catch(err => {
@@ -415,7 +428,12 @@ async function handleSecondaryMessage(message, client, clientSecondary) {
         try {
           const secondaryChannel = await clientSecondary.channels.fetch(lastSecondaryChannelId);
           if (secondaryChannel) {
-            const secondaryMsg = await secondaryChannel.messages.fetch(mirroredMsg.id).catch(() => null);
+            let secondaryMsg = null;
+            try {
+              secondaryMsg = await secondaryChannel.messages.fetch(mirroredMsg.id);
+            } catch (fetchErr) {
+              // Safe fallback
+            }
             if (secondaryMsg) {
               await secondaryMsg.reply({ content: replyText });
               console.log(`[Secondary DM] Successfully replied to mirrored message with roasts.`);
@@ -427,6 +445,15 @@ async function handleSecondaryMessage(message, client, clientSecondary) {
         } catch (replyErr) {
           console.error('[Secondary DM] Failed to reply with secondary client:', replyErr);
           require('fs').appendFileSync('debug.log', `[Reply block error] ${replyErr.stack || replyErr.message}\n`);
+        }
+
+        // Also reply back to the user in their DMs!
+        try {
+          await message.reply({ content: replyText });
+          console.log(`[Secondary DM] Successfully sent reply back to user's DM.`);
+        } catch (dmReplyErr) {
+          console.error('[Secondary DM] Failed to reply back to user in DM:', dmReplyErr.message);
+          require('fs').appendFileSync('debug.log', `[DM reply back error] ${dmReplyErr.stack || dmReplyErr.message}\n`);
         }
       }
     } catch (err) {
