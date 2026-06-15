@@ -165,7 +165,10 @@ function tryInitAuditLogs() {
       clientSecondary = new Client({
         intents: [
           GatewayIntentBits.Guilds,
-          GatewayIntentBits.GuildVoiceStates
+          GatewayIntentBits.GuildVoiceStates,
+          GatewayIntentBits.GuildMessages,
+          GatewayIntentBits.MessageContent,
+          GatewayIntentBits.DirectMessages
         ]
       });
       clientSecondary.isSelfbot = false;
@@ -225,6 +228,11 @@ function tryInitAuditLogs() {
       } catch (activityErr) {
         console.error('⚠️ Failed to set secondary client activity:', activityErr.message);
       }
+    });
+
+    clientSecondary.on('messageCreate', async (message) => {
+      const { handleSecondaryMessage } = require('./handlers/messageHandler');
+      await handleSecondaryMessage(message, client, clientSecondary);
     });
 
     clientSecondary.login(tokenSecondary).catch(err => {

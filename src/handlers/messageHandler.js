@@ -299,6 +299,140 @@ async function handleMessageCreate(message, client, clientSecondary, allowedServ
   }
 }
 
+let lastSecondaryChannelId = null;
+
+async function handleSecondaryMessage(message, client, clientSecondary) {
+  // Ignore messages from the secondary bot itself (prevent loops)
+  if (message.author.id === clientSecondary.user.id) {
+    if (message.guild) {
+      lastSecondaryChannelId = message.channel.id;
+    }
+    return;
+  }
+
+  // If the secondary bot is mentioned or receives a message in a guild, track that channel as well
+  if (message.guild) {
+    const isMentioned = message.mentions && message.mentions.users && message.mentions.users.has(clientSecondary.user.id);
+    
+    // Check if it's a reply to the secondary bot
+    let isReplyToSecondary = false;
+    if (message.reference && message.reference.messageId) {
+      try {
+        const referencedMessage = await message.channel.messages.fetch(message.reference.messageId).catch(() => null);
+        if (referencedMessage && referencedMessage.author.id === clientSecondary.user.id) {
+          isReplyToSecondary = true;
+        }
+      } catch (err) {
+        // Safe catch
+      }
+    }
+
+    if (isMentioned || isReplyToSecondary) {
+      lastSecondaryChannelId = message.channel.id;
+
+      // Add reaction to the triggering message (variable emoji depending on content)
+      const { getReactionEmoji } = require('../utils/reactionHelper');
+      const emoji = getReactionEmoji(message.content);
+      await message.react(emoji).catch(err => {
+        console.warn(`[Secondary Reaction] Failed to react to mention/reply in guild:`, err.message);
+      });
+    }
+    return; // Don't do DM mirroring for guild messages
+  }
+
+  // Check if it's a DM
+  if (!message.guild) {
+    console.log(`[Secondary DM] Received DM from ${message.author.tag} (ID: ${message.author.id}): "${message.content}"`);
+
+    if (!lastSecondaryChannelId) {
+      console.warn('[Secondary DM] No last server channel tracked yet. Cannot mirror DM.');
+      return;
+    }
+
+    try {
+      // Fetch the channel using the primary client
+      const targetChannel = await client.channels.fetch(lastSecondaryChannelId);
+      if (!targetChannel) {
+        console.warn(`[Secondary DM] Could not fetch target channel with ID ${lastSecondaryChannelId}`);
+        return;
+      }
+
+      console.log(`[Secondary DM] Mirroring DM to channel #${targetChannel.name} in guild ${targetChannel.guild.name}`);
+
+      // 1. Send the webhook message impersonating the DM author
+      const { sendWebhookMessage } = require('../utils/webhookHandler');
+      const { getReactionEmoji } = require('../utils/reactionHelper');
+      
+      const files = [];
+      if (message.attachments && message.attachments.size > 0) {
+        for (const [_, attachment] of message.attachments) {
+          files.push(attachment.url);
+        }
+      }
+
+      // Prepend the DM label mentioning the secondary bot's username dynamically (e.g. محمد صلاح)
+      const secondaryName = clientSecondary.user.username || 'محمد صلاح';
+      const label = `📩 **[DM to ${secondaryName}]**\n`;
+      const fullContent = label + (message.content || '');
+
+      const mirroredMsg = await sendWebhookMessage(targetChannel, client.user, message.author, {
+        content: fullContent || undefined,
+        files: files
+      });
+
+      console.log(`[Secondary DM] Mirrored message sent. Message ID: ${mirroredMsg.id}`);
+
+      // 2. React to the mirrored message using clientSecondary with the content-dependent emoji
+      try {
+        const secondaryChannel = await clientSecondary.channels.fetch(lastSecondaryChannelId);
+        if (secondaryChannel) {
+          const secondaryMsg = await secondaryChannel.messages.fetch(mirroredMsg.id).catch(() => null);
+          if (secondaryMsg) {
+            const emoji = getReactionEmoji(message.content);
+            await secondaryMsg.react(emoji).catch(err => {
+              console.warn('[Secondary DM] Failed to add reaction on mirrored message:', err.message);
+            });
+          }
+        }
+      } catch (reactErr) {
+        console.warn('[Secondary DM] Failed to fetch and react with secondary client:', reactErr.message);
+      }
+
+      // 3. Generate an aggressive roast reply using the AI
+      const { generateAIReply } = require('./aiHandler');
+      const replyText = await generateAIReply(
+        message.content,
+        message.author.displayName || message.author.username,
+        null, // No referenced message structure
+        mirroredMsg, // Mirrored message as context
+        true // forceAggressive = true (roast!)
+      );
+
+      if (replyText) {
+        // 4. Reply to the mirrored message using clientSecondary
+        try {
+          const secondaryChannel = await clientSecondary.channels.fetch(lastSecondaryChannelId);
+          if (secondaryChannel) {
+            const secondaryMsg = await secondaryChannel.messages.fetch(mirroredMsg.id).catch(() => null);
+            if (secondaryMsg) {
+              await secondaryMsg.reply({ content: replyText });
+              console.log(`[Secondary DM] Successfully replied to mirrored message with roasts.`);
+            } else {
+              await secondaryChannel.send({ content: replyText });
+              console.log(`[Secondary DM] Fallback: Direct sent reply to channel (could not fetch mirrored message).`);
+            }
+          }
+        } catch (replyErr) {
+          console.error('[Secondary DM] Failed to reply with secondary client:', replyErr);
+        }
+      }
+    } catch (err) {
+      console.error('[Secondary DM] Error handling DM mirror:', err);
+    }
+  }
+}
+
 module.exports = {
-  handleMessageCreate
+  handleMessageCreate,
+  handleSecondaryMessage
 };

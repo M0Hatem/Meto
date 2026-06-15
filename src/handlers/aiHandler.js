@@ -193,7 +193,7 @@ function sanitizeName(name, userId = '') {
  * @param {import('discord.js').Message|null} message The full Discord Message object for context
  * @returns {Promise<string>}
  */
-async function generateAIReply(userMessage, username, referencedMessage, message) {
+async function generateAIReply(userMessage, username, referencedMessage, message, forceAggressive = false) {
   try {
     
     // 1. Gather dynamic environment awareness context
@@ -259,6 +259,9 @@ async function generateAIReply(userMessage, username, referencedMessage, message
     let fullSystemPrompt = BASE_SYSTEM_PROMPT;
     if (contextParts.length > 0) {
       fullSystemPrompt += '\n\nHere is your current live Discord runtime context:\n' + contextParts.join('\n');
+    }
+    if (forceAggressive) {
+      fullSystemPrompt += "\n\nCRITICAL PERSONALITY INSTRUCTION: Reply to this message by ROASTING the user who sent it. Be extremely sarcastic, mock them, and use funny roasts or witty insults in Egyptian Arabic (لهجة مصرية عامية) (or in English if the input message is in English). Speak with total attitude, roast them hard, and show no politeness or filters.";
     }
     
     // 2. Fetch recent message history in the channel to maintain conversation flow
