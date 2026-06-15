@@ -214,6 +214,10 @@ function tryInitAuditLogs() {
           }
 
           clientSecondary.user.setActivity(r);
+
+          // Start kids songs lyrics status rotation part by part
+          const { startLyricRotation } = require('./utils/lyricRotator');
+          startLyricRotation(clientSecondary);
         } else {
           const { ActivityType } = require('discord.js');
           clientSecondary.user.setPresence({
@@ -448,6 +452,12 @@ const shutdown = (signal) => {
       // Stop wake loops
       cleanupWakeLoops();
       console.log('[Shutdown] All active wake loops stopped.');
+
+      // Stop lyric status rotation
+      try {
+        const { stopLyricRotation } = require('./utils/lyricRotator');
+        stopLyricRotation();
+      } catch (_) {}
 
       // Clear penalty timers
       cleanupPenalties();
