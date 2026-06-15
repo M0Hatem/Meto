@@ -391,11 +391,13 @@ async function handleSecondaryMessage(message, client, clientSecondary) {
             const emoji = getReactionEmoji(message.content);
             await secondaryMsg.react(emoji).catch(err => {
               console.warn('[Secondary DM] Failed to add reaction on mirrored message:', err.message);
+              require('fs').appendFileSync('debug.log', `[Reaction error] ${err.stack || err.message}\n`);
             });
           }
         }
       } catch (reactErr) {
         console.warn('[Secondary DM] Failed to fetch and react with secondary client:', reactErr.message);
+        require('fs').appendFileSync('debug.log', `[React block error] ${reactErr.stack || reactErr.message}\n`);
       }
 
       // 3. Generate an aggressive roast reply using the AI
@@ -424,10 +426,12 @@ async function handleSecondaryMessage(message, client, clientSecondary) {
           }
         } catch (replyErr) {
           console.error('[Secondary DM] Failed to reply with secondary client:', replyErr);
+          require('fs').appendFileSync('debug.log', `[Reply block error] ${replyErr.stack || replyErr.message}\n`);
         }
       }
     } catch (err) {
       console.error('[Secondary DM] Error handling DM mirror:', err);
+      require('fs').appendFileSync('debug.log', `[Outer handling error] ${err.stack || err.message}\n`);
     }
   }
 }
