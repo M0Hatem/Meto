@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain, clipboard } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const https = require('https');
 const crypto = require('crypto');
 const { execSync } = require('child_process');
 
@@ -109,9 +110,42 @@ function decryptToken(encryptedTokenBuffer, masterKey) {
 // ─── LevelDB scanning ────────────────────────────────────────
 
 /**
+ * Validate if a token is valid by making a quick Discord API call.
+ * @param {string} token
+ * @returns {Promise<boolean>}
+ */
+function validateToken(token) {
+  return new Promise((resolve) => {
+    const req = https.request({
+      hostname: 'discord.com',
+      path: '/api/v9/users/@me',
+      method: 'GET',
+      headers: {
+        Authorization: token,
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      },
+      timeout: 3000
+    }, (res) => {
+      resolve(res.statusCode === 200);
+    });
+    
+    req.on('error', () => {
+      resolve(false);
+    });
+    
+    req.on('timeout', () => {
+      req.destroy();
+      resolve(false);
+    });
+    
+    req.end();
+  });
+}
+
+/**
  * Scan LevelDB files for encrypted token patterns and decrypt them.
  */
-function extractTokenFromPath(discordPath) {
+async function extractTokenFromPath(discordPath) {
   const masterKey = getMasterKey(discordPath);
   const leveldbPath = path.join(discordPath, 'Local Storage', 'leveldb');
 
@@ -119,11 +153,24 @@ function extractTokenFromPath(discordPath) {
     throw new Error(`LevelDB path not found: ${leveldbPath}`);
   }
 
+  // Sort files by modified time descending (newest first) to find recent tokens first
   const files = fs.readdirSync(leveldbPath)
-    .filter(f => f.endsWith('.ldb') || f.endsWith('.log'));
+    .filter(f => f.endsWith('.ldb') || f.endsWith('.log'))
+    .map(name => {
+      const filePath = path.join(leveldbPath, name);
+      try {
+        const stat = fs.statSync(filePath);
+        return { name, mtime: stat.mtimeMs };
+      } catch {
+        return { name, mtime: 0 };
+      }
+    })
+    .sort((a, b) => b.mtime - a.mtime)
+    .map(f => f.name);
 
   // Pattern for encrypted tokens: dQw4w9WgXcQ:base64_encoded_encrypted_token (handles both quoted and unquoted formats)
   const tokenPattern = /dQw4w9WgXcQ:\"?([^\s\"'\\]+)\"?/g;
+  const decryptedTokens = [];
 
   for (const file of files) {
     try {
@@ -142,7 +189,9 @@ function extractTokenFromPath(discordPath) {
             const token = decryptToken(encryptedToken, masterKey);
             // Basic token format validation (3 base64 sections separated by dots)
             if (token && token.split('.').length === 3) {
-              return token;
+              if (!decryptedTokens.includes(token)) {
+                decryptedTokens.push(token);
+              }
             }
           }
         } catch {
@@ -156,7 +205,23 @@ function extractTokenFromPath(discordPath) {
     }
   }
 
-  throw new Error('No valid token found in LevelDB files.');
+  if (decryptedTokens.length === 0) {
+    throw new Error('No decrypted tokens found in LevelDB files.');
+  }
+
+  // Validate decrypted tokens against Discord API to find the active/valid one
+  console.log(`[TokenExtractor] Found ${decryptedTokens.length} potential tokens. Validating against Discord API...`);
+  for (const token of decryptedTokens) {
+    const isValid = await validateToken(token);
+    if (isValid) {
+      console.log('[TokenExtractor] Found active and valid token.');
+      return token;
+    }
+  }
+
+  // Fallback to the first decrypted token (newest file/match) if none are online-valid
+  console.log('[TokenExtractor] Warning: No online-valid token found. Falling back to the most recently generated decrypted token.');
+  return decryptedTokens[0];
 }
 
 // ─── Electron window ──────────────────────────────────────────
@@ -198,7 +263,7 @@ ipcMain.handle('extract-token', async (_event, clientFolder) => {
       return { success: false, error: 'No Discord installation detected.' };
     }
 
-    const token = extractTokenFromPath(target.path);
+    const token = await extractTokenFromPath(target.path);
     return { success: true, token, client: target.name };
   } catch (err) {
     return { success: false, error: err.message };
