@@ -102,8 +102,9 @@ async function handleMessageCreate(message, client, clientSecondary, allowedServ
     if (isMentioned || isReplyToSecondary) {
       console.log(`[AI] AI prompt triggered by message from ${message.author.tag} (ID: ${message.author.id}) | isMentioned=${isMentioned} | isReply=${isReplyToSecondary}`);
       
-      if (!process.env.GROQ_API_KEY) {
-        console.warn('[AI] GROQ_API_KEY is not set in environment variables.');
+      const { generateAIReply, isAIEnabled } = require('./aiHandler');
+      if (!isAIEnabled()) {
+        console.warn('[AI] No Groq API keys set in environment variables.');
         return;
       }
 
@@ -112,8 +113,6 @@ async function handleMessageCreate(message, client, clientSecondary, allowedServ
         if (secondaryChannel) {
           // Trigger typing status on secondary bot
           await secondaryChannel.sendTyping().catch(() => {});
-          
-          const { generateAIReply } = require('./aiHandler');
           
           // Clean the message of the secondary bot's mention
           let cleanedContent = message.content.replace(new RegExp(`<@!?${secondaryId}>`, 'g'), '').trim();

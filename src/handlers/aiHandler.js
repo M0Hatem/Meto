@@ -1,56 +1,173 @@
 const Groq = require('groq-sdk');
 
-let groq = null;
+let clients = null;
+let currentClientIndex = 0;
+let initialized = false;
 
 const BASE_SYSTEM_PROMPT =
-  "You are Meto (ميتو), a cool, witty, and helpful Discord assistant. " +
+  "You are Meto (ميتو), a sharp-witted, intelligent, and extremely cool Discord assistant who speaks in natural Egyptian Arabic (لهجة مصرية عامية).\n" +
   "Instructions:\n" +
-  "1. Keep your responses short, natural, and under 1800 characters.\n" +
-  "2. Respond in a natural Egyptian Arabic dialect (لهجة مصرية عامية) that sounds authentic and friendly. Avoid formal or poorly translated Arabic.\n" +
-  "3. Avoid using too many emojis. Use at most 1 or 2 emojis per message, or none at all.\n" +
-  "4. Do NOT start your message with your name (like 'ميتو:') or wrap your message in quotation marks. Just output the actual reply text directly.";
+  "1. Speak like a real Egyptian friend: casual, street-smart, and witty. Avoid formal, literal translations, or robotic/overly-polite Arabic.\n" +
+  "2. Keep your answers brief, engaging, and to the point (under 1000 characters). Don't give long, boring explanations unless asked.\n" +
+  "3. STRICT EMOJI LIMIT: Do not spam emojis. Use at most 1 emoji per message, and only if it really fits. Otherwise, use zero emojis.\n" +
+  "4. Output only your direct response. Never start your response with 'ميتو:' or wrap it in quotes.\n" +
+  "5. Be smart and actually helpful. If someone is teasing you, be witty; if they need help, give them a smart, direct answer.";
+
+function isAIEnabled() {
+  if (process.env.GROQ_API_KEY || process.env.GROQ_API_KEYS) {
+    return true;
+  }
+  for (let i = 1; i <= 5; i++) {
+    if (process.env[`GROQ_API_KEY_${i}`]) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function initializeClients() {
+  if (initialized) return;
+
+  const keys = [];
+
+  // 1. Check GROQ_API_KEYS (comma separated)
+  if (process.env.GROQ_API_KEYS) {
+    const splitKeys = process.env.GROQ_API_KEYS.split(',').map(k => k.trim()).filter(k => k.length > 0);
+    keys.push(...splitKeys);
+  }
+
+  // 2. Check individual GROQ_API_KEY
+  if (process.env.GROQ_API_KEY) {
+    const mainKey = process.env.GROQ_API_KEY.trim();
+    if (!keys.includes(mainKey)) {
+      keys.push(mainKey);
+    }
+  }
+
+  // 3. Check GROQ_API_KEY_1, GROQ_API_KEY_2, etc.
+  let index = 1;
+  while (true) {
+    const key = process.env[`GROQ_API_KEY_${index}`];
+    if (key) {
+      const trimmed = key.trim();
+      if (trimmed && !keys.includes(trimmed)) {
+        keys.push(trimmed);
+      }
+      index++;
+    } else {
+      // Allow gaps up to index + 5 just in case
+      let foundMore = false;
+      for (let check = 1; check <= 5; check++) {
+        const nextKey = process.env[`GROQ_API_KEY_${index + check}`];
+        if (nextKey) {
+          foundMore = true;
+          break;
+        }
+      }
+      if (!foundMore) {
+        break;
+      }
+      index++;
+    }
+  }
+
+  if (keys.length === 0) {
+    throw new Error('No Groq API keys found. Please set GROQ_API_KEY or GROQ_API_KEYS in environment variables.');
+  }
+
+  // Deduplicate and initialize Groq clients
+  const uniqueKeys = [...new Set(keys)];
+  clients = uniqueKeys.map(key => {
+    const masked = key.length > 10 ? `${key.substring(0, 7)}...${key.substring(key.length - 4)}` : '***';
+    return {
+      client: new Groq({ apiKey: key }),
+      masked,
+      lastRateLimited: 0,
+      retryAfter: 0
+    };
+  });
+
+  console.log(`[AI] Initialized ${clients.length} Groq client(s) for API rotation.`);
+  initialized = true;
+}
 
 function getAIClient() {
-  if (!groq) {
-    const apiKey = process.env.GROQ_API_KEY;
-    if (!apiKey) {
-      throw new Error('GROQ_API_KEY is not set in the environment variables.');
+  initializeClients();
+  
+  const now = Date.now();
+  let selectedIdx = currentClientIndex;
+  
+  for (let i = 0; i < clients.length; i++) {
+    const idx = (currentClientIndex + i) % clients.length;
+    const clientInfo = clients[idx];
+    if (now - clientInfo.lastRateLimited > clientInfo.retryAfter) {
+      selectedIdx = idx;
+      break;
     }
-    groq = new Groq({ apiKey });
   }
-  return groq;
+  
+  currentClientIndex = selectedIdx;
+  return clients[selectedIdx];
 }
 
 /**
- * Robust helper to call Groq API with retries on rate limits (429 status codes).
+ * Robust helper to call Groq API with automatic key failover and backoff retries.
  */
-async function callGroqWithRetry(client, options, maxRetries = 3) {
-  let attempt = 0;
-  while (attempt < maxRetries) {
+async function callGroqWithRotation(options, maxAttemptsPerClient = 3) {
+  initializeClients();
+
+  const numClients = clients.length;
+  const totalMaxAttempts = maxAttemptsPerClient * numClients;
+  let attempts = 0;
+  let triedClientsInCycle = 0;
+
+  while (attempts < totalMaxAttempts) {
+    const clientInfo = getAIClient();
     try {
-      return await client.chat.completions.create(options);
+      return await clientInfo.client.chat.completions.create(options);
     } catch (error) {
-      attempt++;
+      attempts++;
       const isRateLimit = error.status === 429 || 
                           (error.message && error.message.includes('429')) || 
                           (error.code && error.code === 'rate_limit_exceeded');
 
-      if (isRateLimit && attempt < maxRetries) {
-        // Look for retry-after header in seconds, fallback to exponential backoff with jitter
-        let retryAfterMs = Math.pow(2, attempt) * 1000 + Math.random() * 1000;
+      if (isRateLimit) {
+        clientInfo.lastRateLimited = Date.now();
+        
+        let retryAfterMs = 5000; // default 5 seconds
         if (error.headers && error.headers['retry-after']) {
           const retryAfterSec = parseFloat(error.headers['retry-after']);
           if (!isNaN(retryAfterSec)) {
             retryAfterMs = retryAfterSec * 1000;
           }
         }
-        console.warn(`[AI] Rate limit hit (429). Retrying attempt ${attempt}/${maxRetries} after ${Math.round(retryAfterMs)}ms...`);
-        await new Promise(resolve => setTimeout(resolve, retryAfterMs));
+        clientInfo.retryAfter = retryAfterMs;
+
+        console.warn(`[AI] Groq client ${clientInfo.masked} rate limited. Retry after ${Math.round(retryAfterMs)}ms.`);
+
+        currentClientIndex = (currentClientIndex + 1) % numClients;
+
+        if (numClients > 1 && triedClientsInCycle < numClients - 1) {
+          triedClientsInCycle++;
+          console.warn(`[AI] Rotating to next client immediately (client ${currentClientIndex + 1}/${numClients}).`);
+          continue;
+        }
+
+        if (attempts < totalMaxAttempts) {
+          const sleepTime = Math.min(2000, retryAfterMs);
+          console.warn(`[AI] All clients rate limited. Waiting ${sleepTime}ms before next attempt...`);
+          triedClientsInCycle = 0; // reset cycle
+          await new Promise(resolve => setTimeout(resolve, sleepTime));
+        } else {
+          throw error;
+        }
       } else {
         throw error;
       }
     }
   }
+
+  throw new Error('Failed to generate response after trying all available Groq API keys.');
 }
 
 /**
@@ -78,7 +195,6 @@ function sanitizeName(name, userId = '') {
  */
 async function generateAIReply(userMessage, username, referencedMessage, message) {
   try {
-    const client = getAIClient();
     
     // 1. Gather dynamic environment awareness context
     let contextParts = [];
@@ -206,8 +322,9 @@ async function generateAIReply(userMessage, username, referencedMessage, message
 
     console.log(`[AI] Generating reply for ${username} in server: ${message?.guild?.name || 'DM'}`);
     
-    const completion = await callGroqWithRetry(client, {
-      model: 'llama-3.3-70b-versatile',
+    const model = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
+    const completion = await callGroqWithRotation({
+      model: model,
       messages: [
         { role: 'system', content: fullSystemPrompt },
         ...chatMessages
@@ -235,5 +352,6 @@ async function generateAIReply(userMessage, username, referencedMessage, message
 }
 
 module.exports = {
-  generateAIReply
+  generateAIReply,
+  isAIEnabled
 };
