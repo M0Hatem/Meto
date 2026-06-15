@@ -9,7 +9,7 @@ let _secondaryClient = null;
 async function getSecondaryStreamer(clientSecondary) {
   if (!secondaryStreamer && clientSecondary) {
     const pkg = await import('@dank074/discord-video-stream');
-    const { Streamer, BaseMediaConnection, VoiceOpCodesBinary } = pkg;
+    const { Streamer, BaseMediaConnection, VoiceOpCodesBinary, GatewayOpCodes } = pkg;
 
     // Patch BaseMediaConnection to prevent the MLS_PROPOSALS crash
     if (BaseMediaConnection && BaseMediaConnection.prototype && BaseMediaConnection.prototype.handleBinaryMessages) {
@@ -29,6 +29,22 @@ async function getSecondaryStreamer(clientSecondary) {
         }
       };
       console.log('🛡️ Successfully patched BaseMediaConnection.handleBinaryMessages to prevent MLS_PROPOSALS crashes.');
+    }
+
+    // Patch Streamer.prototype.signalVideo to prevent it from deafening the client (user token)
+    if (Streamer && Streamer.prototype && Streamer.prototype.signalVideo) {
+      Streamer.prototype.signalVideo = function (video_enabled) {
+        if (!this.voiceConnection) return;
+        const { guildId: guild_id, channelId: channel_id } = this.voiceConnection;
+        this.sendOpcode(GatewayOpCodes.VOICE_STATE_UPDATE || 4, {
+          guild_id: guild_id,
+          channel_id,
+          self_mute: false,
+          self_deaf: false,
+          self_video: video_enabled,
+        });
+      };
+      console.log('🛡️ Successfully patched Streamer.prototype.signalVideo to prevent user token self-deafening.');
     }
 
     secondaryStreamer = new Streamer(clientSecondary);
@@ -138,7 +154,7 @@ async function setupVoiceConnection(botClient, guild, channel, type = 'primary')
       channelId: channel.id,
       guildId: guild.id,
       adapterCreator: targetGuild.voiceAdapterCreator,
-      selfDeaf: true,
+      selfDeaf: type === 'secondary' ? false : true,
       group: botClient.user.id
     });
 
