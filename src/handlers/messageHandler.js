@@ -90,7 +90,11 @@ async function handleMessageCreate(message, client, clientSecondary, allowedServ
 
     if (message.reference && message.reference.messageId) {
       try {
-        referencedMessage = await message.channel.messages.fetch(message.reference.messageId).catch(() => null);
+        try {
+          referencedMessage = await message.channel.messages.fetch(message.reference.messageId);
+        } catch (fetchErr) {
+          referencedMessage = null;
+        }
         if (referencedMessage && referencedMessage.author.id === secondaryId) {
           isReplyToSecondary = true;
         }
@@ -125,20 +129,20 @@ async function handleMessageCreate(message, client, clientSecondary, allowedServ
           );
 
           if (replyText) {
-            let replied = false;
             try {
-              const secondaryMsg = await secondaryChannel.messages.fetch(message.id).catch(() => null);
-              if (secondaryMsg) {
-                await secondaryMsg.reply({ content: replyText });
-                replied = true;
-              }
+              await secondaryChannel.send({
+                content: replyText,
+                reply: {
+                  messageReference: message.id,
+                  failIfNotExists: false
+                },
+                allowedMentions: { repliedUser: false }
+              });
+              console.log(`[AI] Successfully sent reply via secondary bot.`);
             } catch (err) {
-              console.warn('[AI] Failed to thread-reply via secondary bot, falling back to channel send:', err.message);
-            }
-
-            if (!replied) {
-              await secondaryChannel.send({ content: replyText }).catch(err => {
-                console.error('[AI] Failed to send message via secondary bot channel:', err.message);
+              console.warn('[AI] Failed to reply via secondary bot, falling back to standard send:', err.message);
+              await secondaryChannel.send({ content: replyText }).catch(sendErr => {
+                console.error('[AI] Failed fallback send via secondary bot channel:', sendErr.message);
               });
             }
           }
@@ -159,7 +163,12 @@ async function handleMessageCreate(message, client, clientSecondary, allowedServ
   // --- REPLY DETECTION AND ORIGINAL OWNER NOTIFICATION ---
   if (message.reference && message.reference.messageId) {
     try {
-      const referencedMessage = await message.channel.messages.fetch(message.reference.messageId).catch(() => null);
+      let referencedMessage = null;
+      try {
+        referencedMessage = await message.channel.messages.fetch(message.reference.messageId);
+      } catch (fetchErr) {
+        // Safe ignore
+      }
       if (referencedMessage) {
         // Check if the referenced message is a Meto bot/webhook message by checking footer text
         const hasMetoEmbed = referencedMessage.embeds && referencedMessage.embeds.some(embed => 
@@ -318,7 +327,12 @@ async function handleSecondaryMessage(message, client, clientSecondary) {
     let isReplyToSecondary = false;
     if (message.reference && message.reference.messageId) {
       try {
-        const referencedMessage = await message.channel.messages.fetch(message.reference.messageId).catch(() => null);
+        let referencedMessage = null;
+        try {
+          referencedMessage = await message.channel.messages.fetch(message.reference.messageId);
+        } catch (fetchErr) {
+          // Safe catch
+        }
         if (referencedMessage && referencedMessage.author.id === clientSecondary.user.id) {
           isReplyToSecondary = true;
         }
@@ -428,19 +442,15 @@ async function handleSecondaryMessage(message, client, clientSecondary) {
         try {
           const secondaryChannel = await clientSecondary.channels.fetch(lastSecondaryChannelId);
           if (secondaryChannel) {
-            let secondaryMsg = null;
-            try {
-              secondaryMsg = await secondaryChannel.messages.fetch(mirroredMsg.id);
-            } catch (fetchErr) {
-              // Safe fallback
-            }
-            if (secondaryMsg) {
-              await secondaryMsg.reply({ content: replyText });
-              console.log(`[Secondary DM] Successfully replied to mirrored message with roasts.`);
-            } else {
-              await secondaryChannel.send({ content: replyText });
-              console.log(`[Secondary DM] Fallback: Direct sent reply to channel (could not fetch mirrored message).`);
-            }
+            await secondaryChannel.send({
+              content: replyText,
+              reply: {
+                messageReference: mirroredMsg.id,
+                failIfNotExists: false
+              },
+              allowedMentions: { repliedUser: false }
+            });
+            console.log(`[Secondary DM] Successfully replied to mirrored message with roasts.`);
           }
         } catch (replyErr) {
           console.error('[Secondary DM] Failed to reply with secondary client:', replyErr);
