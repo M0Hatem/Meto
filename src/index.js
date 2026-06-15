@@ -218,7 +218,7 @@ function tryInitAuditLogs() {
 
           // Start kids songs lyrics status rotation part by part
           const { startLyricRotation } = require('./utils/lyricRotator');
-          startLyricRotation(clientSecondary);
+          startLyricRotation(clientSecondary, r);
         } else {
           const { ActivityType } = require('discord.js');
           clientSecondary.user.setPresence({

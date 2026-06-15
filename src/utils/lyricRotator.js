@@ -61,8 +61,9 @@ let lyricInterval = null;
 /**
  * Starts rotating the secondary bot's custom status through the kids songs lyrics line-by-line.
  * @param {object} clientSecondary - The secondary Discord client (self-bot).
+ * @param {object} [streamingPresence] - The optional streaming RichPresence object to display alongside the custom status.
  */
-function startLyricRotation(clientSecondary) {
+function startLyricRotation(clientSecondary, streamingPresence) {
   if (!clientSecondary || !clientSecondary.isSelfbot) {
     console.warn('[Lyrics] Rotation is only supported when running the secondary client in user self-bot mode.');
     return;
@@ -77,7 +78,13 @@ function startLyricRotation(clientSecondary) {
       const status = new CustomStatus(clientSecondary)
         .setState(currentLine);
         
-      clientSecondary.user.setActivity(status);
+      const activities = [];
+      if (streamingPresence) {
+        activities.push(streamingPresence);
+      }
+      activities.push(status);
+
+      clientSecondary.user.setPresence({ activities });
 
       currentLineIndex++;
       if (currentLineIndex >= currentSong.length) {
