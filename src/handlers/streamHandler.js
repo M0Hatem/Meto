@@ -22,6 +22,11 @@ function isStreamLive(streamer) {
 const activeStreams = new Map();
 // Track guilds currently undergoing stream restart to prevent race conditions
 const restartingStreams = new Set();
+// Guilds with a restart queued because one was already running when requested
+const pendingRestart = new Set();
+// Last successful restart time per guild (non-blocking cooldown)
+const lastRestartAt = new Map();
+const RESTART_COOLDOWN_MS = 15000;
 
 // Hardcoded authorized user (matches /leave, /wake, /stopw pattern)
 const AUTHORIZED_USER_ID = '476908643711713280';
@@ -197,67 +202,84 @@ function cleanupAllStreams() {
 
 async function restartStreamIfActive(guildId) {
   const active = activeStreams.get(guildId);
-  if (active && active.streamer) {
-    if (restartingStreams.has(guildId)) {
-      console.log(`[StreamHandler] [Guild: ${guildId}] Stream restart already in progress. Skipping duplicate restart request.`);
-      return;
-    }
-    restartingStreams.add(guildId);
-    console.log(`[StreamHandler] [Guild: ${guildId}] Re-establishing stream after voice rejoin...`);
+  if (!active || !active.streamer) return;
 
-    try {
-      const maxRetries = 3;
-      let succeeded = false;
-      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+  // A restart is already running — queue one more pass instead of dropping it.
+  // This is the case that broke after the 2nd disconnect.
+  if (restartingStreams.has(guildId)) {
+    pendingRestart.add(guildId);
+    console.log(`[StreamHandler] [Guild: ${guildId}] Restart already running — queued a follow-up restart.`);
+    return;
+  }
+
+  // Cooldown: skip ONLY if we restarted recently AND the stream is genuinely live.
+  // If the stream is dead (e.g. after a move), restart no matter what.
+  const last = lastRestartAt.get(guildId) || 0;
+  if (Date.now() - last < RESTART_COOLDOWN_MS && isStreamLive(active.streamer)) {
+    console.log(`[StreamHandler] [Guild: ${guildId}] Skipping restart — stream is live and within cooldown.`);
+    return;
+  }
+
+  restartingStreams.add(guildId);
+  console.log(`[StreamHandler] [Guild: ${guildId}] Re-establishing stream after voice rejoin...`);
+
+  try {
+    const maxRetries = 3;
+    let succeeded = false;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        // Clear any stale/half-dead stream state before EACH attempt
         try {
-          // Clear any stale/half-dead stream state before EACH attempt
-          try {
-            active.streamer.stopStream();
-          } catch (_) {}
+          active.streamer.stopStream();
+        } catch (_) {}
 
-          // Wait for the voice gateway to settle before re-creating the stream.
-          // After a move, Discord needs a moment to finalize the new voice session.
-          const delay = attempt === 1 ? 2000 : attempt * 3000;
-          console.log(`[StreamHandler] [Guild: ${guildId}] Waiting ${delay}ms before stream re-creation (attempt ${attempt}/${maxRetries})...`);
-          await new Promise(resolve => setTimeout(resolve, delay));
+        // Wait for the voice gateway to settle before re-creating the stream.
+        // After a move, Discord needs a moment to finalize the new voice session.
+        const delay = attempt === 1 ? 2000 : attempt * 3000;
+        console.log(`[StreamHandler] [Guild: ${guildId}] Waiting ${delay}ms before stream re-creation (attempt ${attempt}/${maxRetries})...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
 
-          const config = getStreamConfig(guildId);
-          console.log(`[StreamHandler] [Guild: ${guildId}] Initializing stream re-creation (attempt ${attempt}/${maxRetries})...`);
-          await withTimeout(
-            active.streamer.createStream({
-              width: config.width || 1280,
-              height: config.height || 720,
-              fps: config.fps || 30,
-              bitrateKbps: config.bitrateKbps || 2500,
-              maxBitrateKbps: (config.bitrateKbps || 2500) * 1.5,
-              videoCodec: 'H264',
-              readAtNativeFps: true,
-              hardwareAcceleratedDecoding: false
-            }),
-            15000,
-            'createStream call hung'
-          );
-          console.log(`[StreamHandler] [Guild: ${guildId}] Stream re-established successfully on attempt ${attempt}. ✅`);
-          succeeded = true;
-          break; // Success — exit retry loop
-        } catch (err) {
-          const errMsg = err ? (err.message || err) : 'Unknown error';
-          console.error(`[StreamHandler] [Guild: ${guildId}] Failed to re-establish stream (attempt ${attempt}/${maxRetries}):`, errMsg);
-          if (attempt === maxRetries) {
-            console.error(`[StreamHandler] [Guild: ${guildId}] All ${maxRetries} restart attempts failed. Stream may be down until next health check.`);
-          }
+        const config = getStreamConfig(guildId);
+        console.log(`[StreamHandler] [Guild: ${guildId}] Initializing stream re-creation (attempt ${attempt}/${maxRetries})...`);
+        await withTimeout(
+          active.streamer.createStream({
+            width: config.width || 1280,
+            height: config.height || 720,
+            fps: config.fps || 30,
+            bitrateKbps: config.bitrateKbps || 2500,
+            maxBitrateKbps: (config.bitrateKbps || 2500) * 1.5,
+            videoCodec: 'H264',
+            readAtNativeFps: true,
+            hardwareAcceleratedDecoding: false
+          }),
+          15000,
+          'createStream call hung'
+        );
+        console.log(`[StreamHandler] [Guild: ${guildId}] Stream re-established successfully on attempt ${attempt}. ✅`);
+        succeeded = true;
+        break; // Success — exit retry loop
+      } catch (err) {
+        const errMsg = err ? (err.message || err) : 'Unknown error';
+        console.error(`[StreamHandler] [Guild: ${guildId}] Failed to re-establish stream (attempt ${attempt}/${maxRetries}):`, errMsg);
+        if (attempt === maxRetries) {
+          console.error(`[StreamHandler] [Guild: ${guildId}] All ${maxRetries} restart attempts failed. Stream may be down until next health check.`);
         }
       }
+    }
 
-      // Hold the lock for 15 seconds after success to prevent other mechanisms
-      // (StreamMonitor, etc.) from immediately restarting again
-      if (succeeded) {
-        console.log(`[StreamHandler] [Guild: ${guildId}] Holding restart lock for 15s cooldown...`);
-        await new Promise(resolve => setTimeout(resolve, 15000));
-      }
-    } finally {
-      restartingStreams.delete(guildId);
-      console.log(`[StreamHandler] [Guild: ${guildId}] Stream restart state cleared.`);
+    if (succeeded) {
+      // Non-blocking cooldown — do NOT hold the lock here.
+      lastRestartAt.set(guildId, Date.now());
+    }
+  } finally {
+    restartingStreams.delete(guildId);
+    console.log(`[StreamHandler] [Guild: ${guildId}] Stream restart state cleared.`);
+
+    // If a move happened while we were busy, run the restart it needed now.
+    if (pendingRestart.has(guildId)) {
+      pendingRestart.delete(guildId);
+      console.log(`[StreamHandler] [Guild: ${guildId}] Running queued follow-up restart...`);
+      setImmediate(() => restartStreamIfActive(guildId));
     }
   }
 }
