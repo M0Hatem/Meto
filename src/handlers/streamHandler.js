@@ -1,6 +1,22 @@
 const { getStreamConfig } = require('../stream/streamConfig');
 const { getActiveConnections, isInVC } = require('./voiceHandler');
 
+function withTimeout(promise, timeoutMs, errorMsg) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(errorMsg || `Operation timed out after ${timeoutMs}ms`)), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+function isStreamLive(streamer) {
+  try {
+    return !!(streamer && streamer.voiceConnection && streamer.voiceConnection.streamConnection);
+  } catch {
+    return false;
+  }
+}
+
 // ─── Module state ──────────────────────────────────────────────
 // One stream per guild: guildId -> { streamer, channelId, startedAt }
 const activeStreams = new Map();
@@ -62,8 +78,8 @@ async function handleStreamCommand(interaction) {
 
   const channelId = guildConns.secondary.channelId;
 
-  // If already streaming, toggle OFF
-  if (activeStreams.has(guildId)) {
+  // If already streaming and live, toggle OFF
+  if (activeStreams.has(guildId) && isStreamLive(streamer)) {
     console.log(`[StreamHandler] [Guild: ${guildId}] Received request to toggle stream OFF.`);
     try {
       if (streamer) {
@@ -85,6 +101,15 @@ async function handleStreamCommand(interaction) {
     }
   }
 
+  // If tracked but NOT live, clear stale tracking entry so we can establish a fresh one in one command
+  if (activeStreams.has(guildId)) {
+    console.log(`[StreamHandler] [Guild: ${guildId}] Stream tracked but not live — clearing stale state to re-establish.`);
+    try {
+      streamer.stopStream();
+    } catch (_) {}
+    activeStreams.delete(guildId);
+  }
+
   // Otherwise, toggle ON (Defer reply as Discord API calls take time)
   await interaction.deferReply();
   console.log(`[StreamHandler] [Guild: ${guildId}] Deferring reply to establish stream for channel ${channelId}...`);
@@ -94,16 +119,20 @@ async function handleStreamCommand(interaction) {
 
     // Create stream connection (Go Live / Screen-Share) and await WebRTC connection
     console.log(`[StreamHandler] [Guild: ${guildId}] Initializing createStream... Config:`, config);
-    await streamer.createStream({
-      width: config.width || 1280,
-      height: config.height || 720,
-      fps: config.fps || 30,
-      bitrateKbps: config.bitrateKbps || 2500,
-      maxBitrateKbps: (config.bitrateKbps || 2500) * 1.5,
-      videoCodec: 'H264',
-      readAtNativeFps: true,
-      hardwareAcceleratedDecoding: false
-    });
+    await withTimeout(
+      streamer.createStream({
+        width: config.width || 1280,
+        height: config.height || 720,
+        fps: config.fps || 30,
+        bitrateKbps: config.bitrateKbps || 2500,
+        maxBitrateKbps: (config.bitrateKbps || 2500) * 1.5,
+        videoCodec: 'H264',
+        readAtNativeFps: true,
+        hardwareAcceleratedDecoding: false
+      }),
+      15000,
+      'createStream call hung'
+    );
 
     console.log(`[StreamHandler] [Guild: ${guildId}] Stream connection established successfully.`);
 
@@ -177,16 +206,15 @@ async function restartStreamIfActive(guildId) {
     console.log(`[StreamHandler] [Guild: ${guildId}] Re-establishing stream after voice rejoin...`);
 
     try {
-      // Stop any stale stream connection state ONCE before retrying
-      try {
-        console.log(`[StreamHandler] [Guild: ${guildId}] Stopping stale stream connection...`);
-        active.streamer.stopStream();
-      } catch (_) {}
-
       const maxRetries = 3;
       let succeeded = false;
       for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
+          // Clear any stale/half-dead stream state before EACH attempt
+          try {
+            active.streamer.stopStream();
+          } catch (_) {}
+
           // Wait for the voice gateway to settle before re-creating the stream.
           // After a move, Discord needs a moment to finalize the new voice session.
           const delay = attempt === 1 ? 2000 : attempt * 3000;
@@ -195,16 +223,20 @@ async function restartStreamIfActive(guildId) {
 
           const config = getStreamConfig(guildId);
           console.log(`[StreamHandler] [Guild: ${guildId}] Initializing stream re-creation (attempt ${attempt}/${maxRetries})...`);
-          await active.streamer.createStream({
-            width: config.width || 1280,
-            height: config.height || 720,
-            fps: config.fps || 30,
-            bitrateKbps: config.bitrateKbps || 2500,
-            maxBitrateKbps: (config.bitrateKbps || 2500) * 1.5,
-            videoCodec: 'H264',
-            readAtNativeFps: true,
-            hardwareAcceleratedDecoding: false
-          });
+          await withTimeout(
+            active.streamer.createStream({
+              width: config.width || 1280,
+              height: config.height || 720,
+              fps: config.fps || 30,
+              bitrateKbps: config.bitrateKbps || 2500,
+              maxBitrateKbps: (config.bitrateKbps || 2500) * 1.5,
+              videoCodec: 'H264',
+              readAtNativeFps: true,
+              hardwareAcceleratedDecoding: false
+            }),
+            15000,
+            'createStream call hung'
+          );
           console.log(`[StreamHandler] [Guild: ${guildId}] Stream re-established successfully on attempt ${attempt}. ✅`);
           succeeded = true;
           break; // Success — exit retry loop

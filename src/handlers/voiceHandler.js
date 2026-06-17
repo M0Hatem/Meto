@@ -6,6 +6,15 @@ let secondaryStreamer = null;
 let _primaryClient = null;
 let _secondaryClient = null;
 
+function withTimeout(promise, timeoutMs, errorMsg) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(errorMsg || 'Operation timed out')), timeoutMs)
+    )
+  ]);
+}
+
 async function getSecondaryStreamer(clientSecondary) {
   if (!secondaryStreamer && clientSecondary) {
     const pkg = await import('@dank074/discord-video-stream');
@@ -79,11 +88,21 @@ async function setupVoiceConnection(botClient, guild, channel, type = 'primary')
         throw new Error('Secondary streamer client is not ready or not initialized.');
       }
 
-      await streamer.joinVoice(guild.id, channel.id, {
-        selfDeaf: false,
-        selfMute: true,
-        selfVideo: false
-      });
+      // Stop any active/stale stream connection before joining voice to prevent deadlocks or hangs
+      try {
+        console.log(`[Voice - secondary] [Guild: ${guild.id}] Stopping any active/stale stream before voice join...`);
+        streamer.stopStream();
+      } catch (_) {}
+
+      await withTimeout(
+        streamer.joinVoice(guild.id, channel.id, {
+          selfDeaf: false,
+          selfMute: true,
+          selfVideo: false
+        }),
+        15000,
+        'joinVoice call hung'
+      );
 
       if (!voiceConnections.has(guild.id)) {
         voiceConnections.set(guild.id, {});

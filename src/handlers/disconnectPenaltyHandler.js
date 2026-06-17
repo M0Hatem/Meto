@@ -10,8 +10,7 @@ const RESET_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
 // userId -> { strikes: number, tier: number, resetTimer: NodeJS.Timeout|null }
 const penaltyData = new Map();
 
-// Active tier-1 penalties: userId -> intervalId
-const activeTier1Penalties = new Map();
+
 
 // Per-guild debounce: guildId -> timestamp of last processed penalty (prevents double-counting)
 const lastPenaltyTime = new Map();
@@ -255,10 +254,15 @@ async function handleBotDisconnected(guild, executorId, secondaryClient, primary
   // ── Strikes < 3 → warning message ──
   if (data.strikes < MAX_STRIKES) {
     const remaining = MAX_STRIKES - data.strikes;
-    const nextTier = Math.min(data.tier + 1, 2);
-    const tierLabel = nextTier === 1
-      ? 'Tier 1 (Getting kicked out of VC 3 times 💀)'
-      : 'Tier 2 (1-minute timeout 🔇)';
+    const nextTier = Math.min(data.tier + 1, 3);
+    let tierLabel = '';
+    if (nextTier === 1) {
+      tierLabel = 'Tier 1 (3-minute timeout 🔇)';
+    } else if (nextTier === 2) {
+      tierLabel = 'Tier 2 (5-minute timeout 🔇)';
+    } else {
+      tierLabel = 'Tier 3 (10-minute timeout 🔇)';
+    }
 
     await channel.send(
       `<@${executorId}> خف بضان يحبيبي 🤬\n` +
@@ -273,87 +277,47 @@ async function handleBotDisconnected(guild, executorId, secondaryClient, primary
 
   // ── 3/3 reached → apply penalty ──
   data.strikes = 0; // reset counter for next cycle
-  data.tier = Math.min(data.tier + 1, 2);
+  data.tier = Math.min(data.tier + 1, 3);
 
+  let durationMs = 0;
+  let durationLabel = '';
   if (data.tier === 1) {
-    await channel.send(
-      `<@${executorId}> خف بضان يحبيبي 💥\n` +
-      `🔴 **3/3** strikes! **Tier 1** penalty ACTIVATED!\n` +
-      `You are going to get kicked out of the voice channel **3 times** over the next **5 minutes**! 😈\n` +
-      `[.​](https://tenor.com/view/tung-tung-tung-tung-sahur-tung-tung-sahur-tung-tung-tung-sahur-brainrot-baseball-gif-13999381090646842001)`
-    ).catch(err => console.error('[Penalty] Failed to send tier 1 message:', err.message));
-
-    applyTier1Penalty(guild, executorId, primaryClient);
-
+    durationMs = 3 * 60 * 1000;
+    durationLabel = '3-minute';
+  } else if (data.tier === 2) {
+    durationMs = 5 * 60 * 1000;
+    durationLabel = '5-minute';
   } else {
-    // Tier 2 (max)
-    await channel.send(
-      `<@${executorId}> خف بضان يحبيبي 🔇\n` +
-      `🔴 **3/3** strikes! **Tier 2** penalty ACTIVATED!\n` +
-      `Enjoy your **1-minute timeout**! Talk to the hand! 🤫\n` +
-      `[.​](https://tenor.com/view/tung-tung-tung-tung-sahur-tung-tung-sahur-tung-tung-tung-sahur-brainrot-baseball-gif-13999381090646842001)`
-    ).catch(err => console.error('[Penalty] Failed to send tier 2 message:', err.message));
-
-    await applyTier2Penalty(guild, executorId, primaryClient);
+    durationMs = 10 * 60 * 1000;
+    durationLabel = '10-minute';
   }
+
+  await channel.send(
+    `<@${executorId}> خف بضان يحبيبي 🔇\n` +
+    `🔴 **3/3** strikes! **Tier ${data.tier}** penalty ACTIVATED!\n` +
+    `Enjoy your **${durationLabel} timeout**! Talk to the hand! 🤫\n` +
+    `[.​](https://tenor.com/view/tung-tung-tung-tung-sahur-tung-tung-sahur-tung-tung-tung-sahur-brainrot-baseball-gif-13999381090646842001)`
+  ).catch(err => console.error(`[Penalty] Failed to send tier ${data.tier} message:`, err.message));
+
+  await applyTimeoutPenalty(guild, executorId, durationMs, data.tier, primaryClient);
 }
 
 // ─── Penalties ─────────────────────────────────────────────────
 
 /**
- * Tier 1: disconnect the offending user 3 times, spread across ~5 minutes.
+ * Applies timeout penalty to the offending user.
  */
-function applyTier1Penalty(guild, userId, primaryClient) {
-  // Cancel any existing tier-1 penalty on this user
-  if (activeTier1Penalties.has(userId)) {
-    clearInterval(activeTier1Penalties.get(userId));
-  }
-
-  let remaining = 3;
-  const intervalMs = Math.floor(RESET_WINDOW_MS / 3); // ~100 s apart
-
-  const id = setInterval(async () => {
-    try {
-      const g = primaryClient.guilds.cache.get(guild.id);
-      if (!g) { clearInterval(id); activeTier1Penalties.delete(userId); return; }
-
-      const member = await g.members.fetch(userId).catch(() => null);
-      if (member && member.voice.channel) {
-        await member.voice.disconnect('Penalty: Tier 1 — disconnected for repeatedly disconnecting the bot');
-        remaining--;
-        console.log(`[Penalty] Tier 1: Disconnected ${userId}. ${remaining} left.`);
-      } else {
-        console.log(`[Penalty] Tier 1: ${userId} not in voice. Skipping this round.`);
-      }
-    } catch (err) {
-      console.error(`[Penalty] Tier 1 disconnect failed for ${userId}:`, err.message);
-    }
-
-    if (remaining <= 0) {
-      console.log(`[Penalty] Tier 1 penalty complete for ${userId}.`);
-      clearInterval(id);
-      activeTier1Penalties.delete(userId);
-    }
-  }, intervalMs);
-
-  activeTier1Penalties.set(userId, id);
-  console.log(`[Penalty] Tier 1: Scheduled 3 disconnects for ${userId} every ~${Math.round(intervalMs / 1000)}s.`);
-}
-
-/**
- * Tier 2: timeout the offending user for 1 minute.
- */
-async function applyTier2Penalty(guild, userId, primaryClient) {
+async function applyTimeoutPenalty(guild, userId, durationMs, tier, primaryClient) {
   try {
     const g = primaryClient.guilds.cache.get(guild.id);
     if (!g) return;
     const member = await g.members.fetch(userId).catch(() => null);
     if (member) {
-      await member.timeout(60_000, 'Penalty: Tier 2 — timed out for repeatedly disconnecting the bot');
-      console.log(`[Penalty] Tier 2: Timed out ${userId} for 1 minute.`);
+      await member.timeout(durationMs, `Penalty: Tier ${tier} — timed out for repeatedly disconnecting the bot`);
+      console.log(`[Penalty] Tier ${tier}: Timed out ${userId} for ${durationMs / 60000} minutes.`);
     }
   } catch (err) {
-    console.error(`[Penalty] Tier 2 timeout failed for ${userId}:`, err.message);
+    console.error(`[Penalty] Tier ${tier} timeout failed for ${userId}:`, err.message);
   }
 }
 
@@ -363,10 +327,6 @@ function cleanupPenalties() {
     if (data.resetTimer) clearTimeout(data.resetTimer);
   }
   penaltyData.clear();
-  for (const [userId, id] of activeTier1Penalties.entries()) {
-    clearInterval(id);
-  }
-  activeTier1Penalties.clear();
 }
 
 /**
@@ -381,15 +341,7 @@ async function removePenalty(guild, userIds, primaryClient) {
   for (const userId of userIds) {
     let userCleared = false;
 
-    // 1. Cancel active tier-1 penalty interval if any
-    if (activeTier1Penalties.has(userId)) {
-      clearInterval(activeTier1Penalties.get(userId));
-      activeTier1Penalties.delete(userId);
-      userCleared = true;
-      console.log(`[Penalty] Cancelled active tier-1 penalty for user ${userId}.`);
-    }
-
-    // 2. Clear penalty tracking data and reset timers
+    // 1. Clear penalty tracking data and reset timers
     if (penaltyData.has(userId)) {
       const data = penaltyData.get(userId);
       if (data.strikes > 0 || data.tier > 0 || data.resetTimer) {
@@ -402,7 +354,7 @@ async function removePenalty(guild, userIds, primaryClient) {
       console.log(`[Penalty] Cleared strikes/tier data for user ${userId}.`);
     }
 
-    // 3. Remove active timeouts (tier-2 penalty) in the guild
+    // 2. Remove active timeouts in the guild
     try {
       const member = await guild.members.fetch(userId).catch(() => null);
       if (member) {
