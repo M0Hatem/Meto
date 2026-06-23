@@ -1,7 +1,4 @@
-const { AttachmentBuilder } = require('discord.js');
 const { detectFacebookLink } = require('../utils/linkDetector');
-const { downloadVideo } = require('../utils/videoDownloader');
-const { createVideoEmbed } = require('../utils/embedBuilder');
 const { sendWebhookMessage } = require('../utils/webhookHandler');
 
 async function handleMessageCreate(message, client, clientSecondary, allowedServers, MAX_FILE_SIZE_MB) {
@@ -214,97 +211,92 @@ async function handleMessageCreate(message, client, clientSecondary, allowedServ
   if (!fbUrl) return;
 
   console.log(`[FB Match] Found URL in message by ${message.author.tag}: ${fbUrl}`);
-  
+
   let processingReaction = null;
-  let videoInfo = null;
 
   try {
-    // 1. Add reaction indicating bot is processing
+    // Add reaction indicating bot is processing
     try {
       processingReaction = await message.react('⏳');
     } catch (reactErr) {
       console.warn('Could not add processing reaction (missing permissions).');
     }
 
-    // Indicate bot is typing in channel
-    await message.channel.sendTyping();
+    // Convert facebook.com URL to facebed.com URL
+    const facebedUrl = fbUrl.replace(/(?:www\.)?facebook\.com/i, 'facebed.com');
+    console.log(`[Facebed] Converted URL: ${fbUrl} -> ${facebedUrl}`);
 
-    // 2. Download the video under size limit
-    videoInfo = await downloadVideo(fbUrl, MAX_FILE_SIZE_MB);
+    // Fetch the facebed page to extract the direct video URL from og:video meta tag
+    const facebedResponse = await fetch(facebedUrl, {
+      headers: {
+        // Use a bot-like User-Agent so facebed returns the OpenGraph HTML (not a redirect)
+        'User-Agent': 'Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)'
+      },
+      redirect: 'follow'
+    });
 
-    // Clean original text by removing the Facebook URL
-    const cleanContent = message.content.replace(fbUrl, '').trim();
+    if (!facebedResponse.ok) {
+      throw new Error(`Facebed returned status ${facebedResponse.status}`);
+    }
 
-    // 3. Create rich embed and attachment
-    const embed = createVideoEmbed(videoInfo, message.author);
-    const attachment = new AttachmentBuilder(videoInfo.filePath, { name: 'meto_video.mp4' });
+    const html = await facebedResponse.text();
 
-    let sentSuccess = false;
+    // Extract direct video URL from og:video or og:video:secure_url meta tag
+    const ogVideoMatch = html.match(/<meta\s+property=["']og:video(?::secure_url)?["']\s+content=["']([^"']+)["']/i)
+      || html.match(/content=["']([^"']+)["']\s+property=["']og:video(?::secure_url)?["']/i);
 
-    // 4. Send via Webhook (impersonating the user)
+    if (!ogVideoMatch || !ogVideoMatch[1]) {
+      throw new Error('Could not extract video URL from facebed response.');
+    }
+
+    const directVideoUrl = ogVideoMatch[1];
+    console.log(`[Facebed] Extracted direct video URL: ${directVideoUrl}`);
+
+    // Reply to the original message via webhook with the user's name and avatar
     try {
       await sendWebhookMessage(message.channel, client.user, message.author, {
-        content: cleanContent || undefined,
-        files: [attachment],
-        embeds: [embed]
-      });
-      sentSuccess = true;
+        content: directVideoUrl
+      }, message.id);
     } catch (webhookErr) {
       console.warn(`[Webhook Error] Falling back to standard reply: ${webhookErr.message}`);
-      
-      // Fallback: Send video + embed as a normal reply if webhook fails (e.g. missing permissions)
+
+      // Fallback: reply normally if webhook fails
       await message.reply({
-        embeds: [embed],
-        files: [attachment],
+        content: directVideoUrl,
         allowedMentions: { repliedUser: false }
       });
-      sentSuccess = true;
     }
 
-    // 5. Delete the original message containing the raw link
-    if (sentSuccess) {
-      try {
-        await message.delete();
-      } catch (deleteErr) {
-        console.warn('Could not delete original message (missing Manage Messages permission).');
-      }
+    // Suppress the embed on the original message so only the video reply shows
+    try {
+      await message.suppressEmbeds(true);
+    } catch (suppressErr) {
+      console.warn('Could not suppress embeds on original message:', suppressErr.message);
     }
 
-    // 6. Clean up reaction if original message is still accessible (should be deleted, but safety first)
+    // Remove processing reaction
     if (processingReaction) {
       try {
         await processingReaction.users.remove(client.user.id);
       } catch (e) {}
     }
 
-    console.log(`[Success] Video uploaded successfully: ${videoInfo.title} (${videoInfo.fileSizeMB}MB)`);
+    console.log(`[Success] Direct video URL sent for: ${fbUrl}`);
 
   } catch (error) {
     console.error(`[Error] Failed to process Facebook URL: ${fbUrl}`);
     console.error(error);
 
-    // Clean up processing reaction and add warning mark
+    // Clean up processing reaction and add error mark
     if (processingReaction) {
       try {
         await processingReaction.users.remove(client.user.id);
-        await message.react('❌');
       } catch (e) {}
     }
 
-    // Reply with a helpful error message
     try {
-      await message.reply({
-        content: `❌ **Failed to process Facebook Video**\n> ${error.message || 'An unexpected error occurred while downloading or uploading the video.'}`,
-        allowedMentions: { repliedUser: false }
-      });
-    } catch (replyErr) {
-      console.error('Could not send error reply to Discord channel:', replyErr.message);
-    }
-  } finally {
-    // Always clean up downloaded files
-    if (videoInfo && typeof videoInfo.cleanUp === 'function') {
-      videoInfo.cleanUp();
-    }
+      await message.react('❌');
+    } catch (e) {}
   }
 }
 
