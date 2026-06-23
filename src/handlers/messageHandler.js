@@ -255,19 +255,41 @@ async function handleMessageCreate(message, client, clientSecondary, allowedServ
     // Send the direct video URL as a masked link (hides the ugly CDN URL)
     const maskedLink = `[.](${directVideoUrl})`;
 
-    // Reply to the original message via webhook with the user's name and avatar
-    try {
-      await sendWebhookMessage(message.channel, client.user, message.author, {
-        content: maskedLink
-      }, message.id);
-    } catch (webhookErr) {
-      console.warn(`[Webhook Error] Falling back to standard reply: ${webhookErr.message}`);
+    // Reply to the original message using the secondary bot (user account) for proper reply indicator
+    let sent = false;
 
-      // Fallback: reply normally if webhook fails
-      await message.reply({
-        content: maskedLink,
-        allowedMentions: { repliedUser: false }
-      });
+    if (clientSecondary && clientSecondary.user && clientSecondary.readyAt) {
+      try {
+        const secondaryChannel = await clientSecondary.channels.fetch(message.channel.id);
+        if (secondaryChannel) {
+          await secondaryChannel.send({
+            content: maskedLink,
+            reply: {
+              messageReference: message.id,
+              failIfNotExists: false
+            },
+            allowedMentions: { repliedUser: false }
+          });
+          sent = true;
+          console.log(`[Facebed] Secondary bot replied with video link.`);
+        }
+      } catch (secErr) {
+        console.warn(`[Facebed] Secondary bot reply failed: ${secErr.message}`);
+      }
+    }
+
+    // Fallback: use primary bot to reply
+    if (!sent) {
+      try {
+        await message.reply({
+          content: maskedLink,
+          allowedMentions: { repliedUser: false }
+        });
+        sent = true;
+        console.log(`[Facebed] Primary bot replied with video link.`);
+      } catch (primaryErr) {
+        console.warn(`[Facebed] Primary bot reply failed: ${primaryErr.message}`);
+      }
     }
 
     // Suppress the embed on the original message so only the video reply shows
