@@ -415,6 +415,18 @@ function tryInitAuditLogs() {
           });
           console.log(`[Voice] Recreated channel "${channel.name}" (new ID: ${newChannel.id}) in guild ${guildId}`);
 
+          // Clean up old secondary connection before anything else (prevents stale state)
+          if (guildConns.secondary && guildConns.secondary.connection) {
+            try {
+              if (typeof guildConns.secondary.connection.leaveVoice === 'function') {
+                guildConns.secondary.connection.leaveVoice();
+              } else {
+                guildConns.secondary.connection.destroy();
+              }
+              console.log(`[Voice - secondary] Cleaned up old connection for guild ${guildId}`);
+            } catch (_) {}
+          }
+
           // Update tracked channel ID for active connections
           if (guildConns.primary) {
             guildConns.primary.channelId = newChannel.id;
@@ -429,10 +441,22 @@ function tryInitAuditLogs() {
             await setupVoiceConnection(client, channel.guild, newChannel, 'primary');
           }
 
-          // Rejoin secondary client (user token self-bot or bot token)
+          // Rejoin secondary client after a short delay to let Discord settle
           if (guildConns.secondary && clientSecondary && clientSecondary.readyAt) {
+            console.log(`[Voice - secondary] Waiting 4s before rejoining new channel ${newChannel.id} (clearing debounce cooldown)...`);
+            await new Promise(resolve => setTimeout(resolve, 4000));
+
             console.log(`[Voice - secondary] Rejoining new channel ${newChannel.id}...`);
             await setupVoiceConnection(clientSecondary, channel.guild, newChannel, 'secondary');
+
+            // Restart stream if it was active
+            try {
+              const { restartStreamIfActive } = require('./handlers/streamHandler');
+              await restartStreamIfActive(guildId);
+              console.log(`[Voice - secondary] Stream restart triggered for guild ${guildId}`);
+            } catch (streamErr) {
+              console.error(`[Voice - secondary] Failed to restart stream after channel recreation:`, streamErr.message);
+            }
           }
         } catch (err) {
           console.error('[Voice] Failed to recreate deleted channel or rejoin bots:', err);
