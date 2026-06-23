@@ -44,18 +44,8 @@ async function getOrCreateWebhook(channel, clientUser) {
 async function sendWebhookMessage(channel, clientUser, author, options, replyToMessageId) {
   const webhook = await getOrCreateWebhook(channel, clientUser);
 
-  const sendOptions = {
-    username: author.displayName || author.globalName || author.username,
-    avatarURL: author.displayAvatarURL({ forceStatic: false }),
-    files: options.files || [],
-    embeds: options.embeds || [],
-    content: options.content || undefined
-  };
-
-  // If the message was sent in a thread, specify the thread ID to route it correctly
-  if (channel.isThread()) {
-    sendOptions.threadId = channel.id;
-  }
+  const username = author.displayName || author.globalName || author.username;
+  const avatarURL = author.displayAvatarURL({ forceStatic: false });
 
   // If a reply target is specified, use the raw Discord API to include message_reference
   if (replyToMessageId) {
@@ -64,33 +54,77 @@ async function sendWebhookMessage(channel, clientUser, author, options, replyToM
       queryParams.set('thread_id', channel.id);
     }
 
-    const body = {
-      username: sendOptions.username,
-      avatar_url: sendOptions.avatarURL,
-      content: sendOptions.content || '',
+    const webhookUrl = `https://discord.com/api/v10/webhooks/${webhook.id}/${webhook.token}?${queryParams}`;
+
+    const payload = {
+      username,
+      avatar_url: avatarURL,
       message_reference: {
-        message_id: replyToMessageId,
-        channel_id: channel.id,
-        guild_id: channel.guildId
+        message_id: replyToMessageId
       },
       allowed_mentions: { replied_user: false }
     };
 
-    const res = await fetch(
-      `https://discord.com/api/v10/webhooks/${webhook.id}/${webhook.token}?${queryParams}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
-      }
-    );
-
-    if (!res.ok) {
-      const errText = await res.text();
-      throw new Error(`Webhook reply failed (${res.status}): ${errText}`);
+    if (options.content) {
+      payload.content = options.content;
     }
 
-    return await res.json();
+    const rawFiles = options.files || [];
+
+    if (rawFiles.length > 0) {
+      // Multipart/form-data upload for files + reply
+      payload.attachments = rawFiles.map((f, i) => ({
+        id: i,
+        filename: f.name || `file_${i}.mp4`
+      }));
+
+      const formData = new FormData();
+      formData.append('payload_json', JSON.stringify(payload));
+
+      for (let i = 0; i < rawFiles.length; i++) {
+        const file = rawFiles[i];
+        const blob = new Blob([file.buffer], { type: file.contentType || 'video/mp4' });
+        formData.append(`files[${i}]`, blob, file.name || `file_${i}.mp4`);
+      }
+
+      const res = await fetch(webhookUrl, {
+        method: 'POST',
+        body: formData
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`Webhook reply failed (${res.status}): ${errText}`);
+      }
+      return await res.json();
+
+    } else {
+      // JSON-only request (no files)
+      const res = await fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`Webhook reply failed (${res.status}): ${errText}`);
+      }
+      return await res.json();
+    }
+  }
+
+  // Standard webhook send (no reply)
+  const sendOptions = {
+    username,
+    avatarURL,
+    files: options.files || [],
+    embeds: options.embeds || [],
+    content: options.content || undefined
+  };
+
+  if (channel.isThread()) {
+    sendOptions.threadId = channel.id;
   }
 
   return await webhook.send(sendOptions);

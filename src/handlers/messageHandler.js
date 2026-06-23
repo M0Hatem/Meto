@@ -252,17 +252,20 @@ async function handleMessageCreate(message, client, clientSecondary, allowedServ
     const directVideoUrl = ogVideoMatch[1];
     console.log(`[Facebed] Extracted direct video URL: ${directVideoUrl}`);
 
+    // Send the direct video URL as a masked link (hides the ugly CDN URL)
+    const maskedLink = `[.](${directVideoUrl})`;
+
     // Reply to the original message via webhook with the user's name and avatar
     try {
       await sendWebhookMessage(message.channel, client.user, message.author, {
-        content: directVideoUrl
+        content: maskedLink
       }, message.id);
     } catch (webhookErr) {
       console.warn(`[Webhook Error] Falling back to standard reply: ${webhookErr.message}`);
 
       // Fallback: reply normally if webhook fails
       await message.reply({
-        content: directVideoUrl,
+        content: maskedLink,
         allowedMentions: { repliedUser: false }
       });
     }
@@ -281,7 +284,7 @@ async function handleMessageCreate(message, client, clientSecondary, allowedServ
       } catch (e) {}
     }
 
-    console.log(`[Success] Direct video URL sent for: ${fbUrl}`);
+    console.log(`[Success] Video link sent for: ${fbUrl}`);
 
   } catch (error) {
     console.error(`[Error] Failed to process Facebook URL: ${fbUrl}`);
